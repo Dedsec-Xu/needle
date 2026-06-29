@@ -19,9 +19,17 @@ The daemon reads the MFT once and keeps the index warm (USN-incremental).
 ./demo/compare.ps1 -Ext dll -Drive C
 ```
 
-It auto-detects whichever competitors are installed (`fd`, `fff`, `rg`) and
-always includes a PowerShell recursive walk as a baseline, then prints a timing
-table with speedup factors versus needle.
+It auto-detects whichever competitors are installed and always includes the
+cmd.exe and PowerShell recursive walks as baselines, then prints a timing table
+with speedup factors versus needle:
+
+- **es.exe** — Everything's CLI, also MFT-based (the apples-to-apples peer)
+- **fd** — sharkdp/fd, parallel directory traversal
+- **rg --files** — ripgrep file listing
+- **cmd dir /s /b** and **Get-ChildItem -Recurse** — always-available baselines
+
+> `fff` is intentionally not included: it is a library / MCP server, not a CLI,
+> so it cannot be invoked from the shell for a fair head-to-head.
 
 Example shape of the output:
 
