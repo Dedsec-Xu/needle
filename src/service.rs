@@ -5,8 +5,15 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::ffi::OsString;
+use std::os::windows::ffi::OsStrExt;
 use std::sync::mpsc;
 use std::time::Duration;
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows_service::service::{
     ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
     ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
@@ -19,6 +26,66 @@ pub const SERVICE_NAME: &str = "needled";
 const DISPLAY_NAME: &str = "needle file-search daemon";
 const DESCRIPTION: &str =
     "Ultra-fast whole-machine NTFS filename search (MFT + USN) for AI agents.";
+
+/// True if the current process holds an elevated (admin) token.
+fn is_elevated() -> bool {
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut size = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut _),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        );
+        let _ = CloseHandle(token);
+        ok.is_ok() && elevation.TokenIsElevated != 0
+    }
+}
+
+/// If not already elevated, relaunch `needle <args>` via UAC and return `true`
+/// (the caller should then exit). Returns `false` when already elevated, so the
+/// caller proceeds. This removes the need for separate elevation wrapper scripts.
+pub fn ensure_elevated(args: &[&str]) -> Result<bool> {
+    if is_elevated() {
+        return Ok(false);
+    }
+    let exe = std::env::current_exe().context("cannot resolve current exe path")?;
+    let exe_w: Vec<u16> = exe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let verb_w: Vec<u16> = OsString::from("runas")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let params_w: Vec<u16> = OsString::from(args.join(" "))
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    eprintln!("[needle] requesting administrator privileges (UAC)...");
+    let h = unsafe {
+        ShellExecuteW(
+            HWND::default(),
+            PCWSTR(verb_w.as_ptr()),
+            PCWSTR(exe_w.as_ptr()),
+            PCWSTR(params_w.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW returns > 32 on success.
+    if h.0 as isize <= 32 {
+        return Err(anyhow!("failed to relaunch elevated (UAC declined?)"));
+    }
+    Ok(true)
+}
 
 /// Register the service with the SCM and start it. Requires admin.
 pub fn install() -> Result<()> {

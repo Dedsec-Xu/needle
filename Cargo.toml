@@ -1,6 +1,6 @@
 [package]
 name = "needle"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Whole-machine, sub-millisecond file search MCP for AI agents (NTFS MFT + USN, Windows)"
 license = "MIT"
@@ -27,6 +27,9 @@ features = [
     "Win32_System_Ioctl",
     "Win32_System_IO",
     "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ]
 
 [profile.release]

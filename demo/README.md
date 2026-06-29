@@ -2,12 +2,14 @@
 
 A head-to-head showing needle answering a **whole-drive** file search from its
 warm NTFS MFT index in well under a millisecond, versus traversal-based tools
-(`fd`, `fff`, ripgrep, or a PowerShell-native walk) that must crawl the tree.
+(`fd`, ripgrep, es.exe, or a PowerShell-native walk) that must crawl the tree.
 
-## 1. Start the daemon (once, elevated)
+## 1. Start the daemon (once)
 
 ```powershell
-./start-daemon.ps1
+needle service install    # installs the LocalSystem service (prompts for UAC)
+# or, ad-hoc from an elevated shell:
+needle serve
 ```
 
 The daemon reads the MFT once and keeps the index warm (USN-incremental).

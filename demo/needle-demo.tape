@@ -1,9 +1,12 @@
 # VHS tape to record the needle-vs-traversal demo GIF.
 # Requires: https://github.com/charmbracelet/vhs  (winget install charmbracelet.vhs)
-# and the needle daemon already running (./start-daemon.ps1).
+# and the needle daemon already running (needle service install, or needle serve).
 #
 # Record with:   vhs demo/needle-demo.tape
 # Produces:      demo/needle-demo.gif
+#
+# Note: queries below target system locations (C:\, *.dll, cmd.exe) on purpose,
+# so the recording never exposes personal files or folder names.
 
 Output demo/needle-demo.gif
 
@@ -19,17 +22,20 @@ Set TypingSpeed 60ms
 Sleep 1s
 
 # The pitch, typed live.
-Type "# needle: find ANY file on the whole machine, in <1ms" Sleep 700ms Enter
+Type "# needle: find any file across a 2M-file drive, in milliseconds" Sleep 700ms Enter
 Sleep 1s
 
-# Single whole-drive query against the warm MFT index.
-Type "needle find '**/*.rs' --root 'D:\' --max-results 5" Sleep 500ms Enter
+# Whole-drive query against the warm MFT index. cmd.exe lives in system dirs,
+# so the results are neutral C:\Windows paths -- no personal files on screen.
+Type "needle find '**/cmd.exe' --root 'C:\' --max-results 5" Sleep 500ms Enter
 Sleep 3s
 
 # Head-to-head against traversal tools on the same whole-drive search.
+# compare.ps1 prints only match counts and timings -- never file paths -- so the
+# drive choice here is purely about a fast, dramatic benchmark, not privacy.
 Type "./demo/compare.ps1 -Ext rs -Drive D" Sleep 500ms Enter
-# The first run warms the index, then times every tool. Give it room.
-Sleep 12s
+# The run warms the index then times every tool; ~13s on a 2M-file drive.
+Sleep 14s
 
-# Let the final speedup table breathe.
-Sleep 3s
+# Hold on the final speedup table so it's readable before the GIF loops.
+Sleep 7s

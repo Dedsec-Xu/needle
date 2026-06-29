@@ -1,8 +1,9 @@
 # Head-to-head: needle (NTFS MFT index) vs other file-search tools doing the
 # SAME whole-drive lookup. Prints a timing table with speedup factors.
 #
-# Prereq: the needle daemon must be running (start-daemon.ps1). The daemon reads
-# the MFT once; `needle find` then answers from the warm in-memory index.
+# Prereq: the needle daemon must be running (needle service install, or needle
+# serve from an elevated shell). The daemon reads the MFT once; `needle find`
+# then answers from the warm in-memory index.
 #
 # Usage:
 #   ./demo/compare.ps1                 # find *.rs on D:
@@ -51,7 +52,7 @@ Write-Host "(whole-drive search; lower is better)`n" -ForegroundColor DarkGray
 Write-Host "Warming needle index (one-time MFT read in the daemon)..." -ForegroundColor DarkGray
 $null = & $needle find $glob --root $root --max-results 1 --addr $Addr 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "needle daemon not reachable at $Addr. Start it first:  ./start-daemon.ps1"
+    Write-Error "needle daemon not reachable at $Addr. Start it first:  needle service install  (or: needle serve)"
     exit 1
 }
 

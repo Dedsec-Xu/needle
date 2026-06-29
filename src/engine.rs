@@ -1,13 +1,14 @@
 //! Query engine: caches a per-drive MFT index in memory, refreshes it
 //! incrementally from the USN Journal, and answers glob queries.
 
-use crate::mft::{build_index, ntfs_drives, Index, JournalOutcome};
+use crate::mft::{build_index, ntfs_drives, watch_drive, Index};
 use anyhow::Result;
 use globset::{GlobBuilder, GlobMatcher};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
 use std::time::Instant;
 
 /// A single query result row.
@@ -28,9 +29,10 @@ pub struct Query<'a> {
     pub respect_gitignore: bool,
 }
 
-/// Holds one cached index per drive letter.
+/// Holds one cached index per drive letter. Each index is an `Arc<RwLock<_>>` so
+/// its dedicated USN-watcher thread can hold a handle independent of the map lock.
 pub struct Engine {
-    indices: RwLock<HashMap<char, RwLock<Index>>>,
+    indices: RwLock<HashMap<char, Arc<RwLock<Index>>>>,
     /// Serializes (slow) full builds so two queries don't build the same drive twice.
     build_lock: Mutex<()>,
 }
@@ -53,44 +55,16 @@ impl Engine {
         if self.indices.read().unwrap().contains_key(&drive) {
             return Ok(());
         }
-        let idx = build_index(drive)?;
+        let idx = Arc::new(RwLock::new(build_index(drive)?));
         self.indices
             .write()
             .unwrap()
-            .insert(drive, RwLock::new(idx));
+            .insert(drive, Arc::clone(&idx));
+        // Spawn this drive's dedicated USN watcher: it blocks on the journal and
+        // applies every change the instant NTFS records it (Everything-style),
+        // and self-heals by rebuilding from the MFT if the journal goes stale.
+        thread::spawn(move || watch_drive(idx));
         Ok(())
-    }
-
-    /// Apply USN incremental updates to every cached drive. Returns total records
-    /// seen. A drive whose journal went stale (deleted/recreated/wrapped) is
-    /// rebuilt from scratch so the index self-heals instead of silently drifting.
-    pub fn refresh_all(&self) -> usize {
-        let mut total = 0;
-        let mut stale: Vec<char> = Vec::new();
-        {
-            let map = self.indices.read().unwrap();
-            for (drive, idx) in map.iter() {
-                if let Ok(mut guard) = idx.write() {
-                    match guard.apply_journal_updates(*drive) {
-                        Ok(JournalOutcome::Updated(n)) => total += n,
-                        Ok(JournalOutcome::Stale) => stale.push(*drive),
-                        Err(_) => {}
-                    }
-                }
-            }
-        }
-        // Rebuild stale drives outside the read lock (build is slow and needs the
-        // write lock on the map to replace the entry).
-        for drive in stale {
-            let _g = self.build_lock.lock().unwrap();
-            if let Ok(idx) = build_index(drive) {
-                self.indices
-                    .write()
-                    .unwrap()
-                    .insert(drive, RwLock::new(idx));
-            }
-        }
-        total
     }
 
     /// Build and cache the index for a drive up front (used by `bench`).

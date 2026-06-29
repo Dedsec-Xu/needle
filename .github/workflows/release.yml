@@ -36,7 +36,6 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/needle.exe dist/
           Copy-Item README.md, LICENSE dist/
-          Copy-Item install-service.ps1, uninstall-service.ps1, start-daemon.ps1 dist/
           $zip = "$name.zip"
           Compress-Archive -Path dist/* -DestinationPath $zip -Force
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()

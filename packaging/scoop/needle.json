@@ -5,7 +5,7 @@
     "license": "MIT",
     "notes": [
         "needle's daemon must run elevated to read the NTFS MFT.",
-        "Install it as a service once:  needle service install   (run from an elevated shell)."
+        "Install it as a service once:  needle service install   (it prompts for elevation via UAC)."
     ],
     "architecture": {
         "64bit": {

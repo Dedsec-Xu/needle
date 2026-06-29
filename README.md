@@ -7,6 +7,8 @@
 
 **Find any file on your machine, instantly — a whole-machine file-search MCP for AI agents. Windows / NTFS.**
 
+![needle demo](demo/needle-demo.gif)
+
 `needle` reads the NTFS **MFT** (Master File Table) directly and keeps a warm
 in-memory index that is refreshed incrementally from the **USN Journal**. It
 exposes a single `fast_glob` MCP tool so a coding agent (Claude Code, etc.) can

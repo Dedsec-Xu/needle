@@ -124,6 +124,9 @@ fn main() -> Result<()> {
         Cmd::Mcp { addr } => run_mcp(&addr),
         Cmd::Service { action } => match action {
             ServiceAction::Install => {
+                if service::ensure_elevated(&["service", "install"])? {
+                    return Ok(());
+                }
                 service::install()?;
                 eprintln!(
                     "[needle] service '{}' installed and started (LocalSystem, auto-start).",
@@ -132,6 +135,9 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ServiceAction::Uninstall => {
+                if service::ensure_elevated(&["service", "uninstall"])? {
+                    return Ok(());
+                }
                 service::uninstall()?;
                 eprintln!("[needle] service '{}' removed.", service::SERVICE_NAME);
                 Ok(())
@@ -272,14 +278,9 @@ fn run_bench(drive: char) -> Result<()> {
 fn run_serve(addr: &str) -> Result<()> {
     let engine = Arc::new(Engine::new());
 
-    // Background USN refresh.
-    {
-        let engine = Arc::clone(&engine);
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(2));
-            engine.refresh_all();
-        });
-    }
+    // No polling thread: each drive index spawns its own USN-journal watcher when
+    // it is first built (see Engine::ensure_drive), which blocks on the journal
+    // and applies changes the instant NTFS records them.
 
     let listener = TcpListener::bind(addr).map_err(|e| anyhow!("failed to bind {addr}: {e}"))?;
     eprintln!("[needled] listening on {addr}");
