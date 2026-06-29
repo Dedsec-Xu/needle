@@ -234,7 +234,22 @@ needle find "**/*.rs" --root "D:\path\to\project" --max-results 50
 
 # query the whole machine (no root scope)
 needle find "**/appsettings.json"
+
+# directories only
+needle find "**/node_modules" --kind dir
+
+# the 20 most recently modified PDFs on the machine
+needle find "**/*.pdf" --sort mtime --order desc --max-results 20
+
+# the largest log files in a project
+needle find "**/*.log" --root "D:\proj" --sort size --order desc
+
+# case-sensitive match
+needle find "**/README.md" --case-sensitive
 ```
+
+Flags (`--kind`, `--case-sensitive`, `--sort`, `--order`) work on both
+`needle find` and `needle query`.
 
 If the daemon isn't running, `needle query` does a one-shot in-process build
 instead — handy for ad-hoc use, but it **must itself be elevated** and pays the
@@ -319,15 +334,41 @@ Reproduce with `demo/compare.ps1`.
 
 ## `fast_glob` tool parameters
 
-| param               | default | meaning                                              |
-|---------------------|---------|------------------------------------------------------|
-| `pattern`           | —       | glob matched vs the path relative to `root`          |
-| `root`              | `""`    | scope to this directory; empty = **whole machine** (all NTFS volumes) |
-| `max_results`       | `200`   | cap on returned paths                                |
-| `respect_gitignore` | `true`  | apply `root/.gitignore`, always skip `.git`          |
+| param               | default  | meaning                                              |
+|---------------------|----------|------------------------------------------------------|
+| `pattern`           | —        | glob matched vs the path relative to `root`          |
+| `root`              | `""`     | scope to this directory; empty = **whole machine** (all NTFS volumes) |
+| `max_results`       | `200`    | cap on returned paths                                |
+| `respect_gitignore` | `true`   | apply `root/.gitignore`, always skip `.git`          |
+| `kind`              | `"any"`  | `file`, `dir`, or `any`                              |
+| `case_sensitive`    | `false`  | case-sensitive pattern matching                      |
+| `sort`              | `"none"` | `none` (fastest), `name`, `mtime`, or `size`         |
+| `order`             | `"asc"`  | `asc` or `desc`                                      |
 
-Patterns are case-insensitive and matched against forward-slash-normalized paths,
-so `**/*.swift`, `src/**/*.rs`, and `**/Cargo.toml` all behave as expected.
+Patterns are matched against forward-slash-normalized paths (case-insensitive
+unless `case_sensitive`), so `**/*.swift`, `src/**/*.rs`, and `**/Cargo.toml` all
+behave as expected.
+
+### Sorting (recent / largest)
+
+`sort=none` is the default and keeps the **sub-millisecond** streaming path — use
+it whenever order doesn't matter. `sort=mtime` / `sort=size` answer "most recent"
+and "largest" intents: the index finds the candidates, then needle **lazily
+stats** them to fill `size`/`mtime`, sorts locally, and returns the top
+`max_results`. Pair with `order=desc`:
+
+```jsonc
+// the 20 newest screenshots anywhere on the machine
+fast_glob({ "pattern": "**/*.png", "sort": "mtime", "order": "desc", "max_results": 20 })
+
+// the biggest log files in a project
+fast_glob({ "pattern": "**/*.log", "root": "D:\\proj", "sort": "size", "order": "desc" })
+```
+
+Metadata sorting stats up to 5000 matched candidates; beyond that the result is
+flagged `sort_approximate` (top-k over an arbitrary subset) rather than scanning
+millions of files. By design, `size`/`mtime` are **not** stored in the index —
+needle stays a search primitive, not a metadata database.
 
 ## Limitations
 
