@@ -19,10 +19,11 @@
 # so it cannot be invoked from the shell for a fair comparison.
 
 param(
-    [string]$Ext   = "rs",
-    [string]$Drive = "D",
-    [int]$Max      = 200,
-    [string]$Addr  = "127.0.0.1:48923"
+    [string]$Ext    = "rs",
+    [string]$Drive  = "D",
+    [int]$Max       = 1000000,
+    [string]$Addr   = "127.0.0.1:48923",
+    [string]$EsPath = "$env:USERPROFILE\Downloads\ES-1.1.0.30.x64\es.exe"
 )
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -30,8 +31,17 @@ $needle = Join-Path $PSScriptRoot "..\target\release\needle.exe"
 $root   = "${Drive}:\"
 $glob   = "**/*.$Ext"
 
+# Make freshly winget-installed tools (fd, rg) discoverable without a shell restart.
+$wingetLinks = "$env:LOCALAPPDATA\Microsoft\WinGet\Links"
+if ((Test-Path $wingetLinks) -and ($env:PATH -notlike "*$wingetLinks*")) {
+    $env:PATH = "$wingetLinks;$env:PATH"
+}
+
 function Write-Head($t) { Write-Host "`n$t" -ForegroundColor Cyan }
 function Have($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+
+# es.exe (Everything CLI): use -EsPath if it exists, else fall back to PATH.
+$es = if (Test-Path $EsPath) { $EsPath } elseif (Have es) { "es" } else { $null }
 
 if (-not (Test-Path $needle)) { Write-Error "needle.exe not found. Run: cargo build --release"; exit 1 }
 
@@ -62,9 +72,9 @@ Measure-Tool "needle (MFT index)" {
 }
 
 # --- Everything es.exe (also MFT) ---
-if (Have es) {
+if ($es) {
     Measure-Tool "es.exe (Everything, MFT)" {
-        es -path $root "*.$Ext" 2>$null
+        & $es -path $root "*.$Ext" 2>$null
     }
 }
 
@@ -75,10 +85,10 @@ if (Have fd) {
     }
 }
 
-# --- ripgrep --files (traversal) ---
+# --- ripgrep --files (traversal); match files actually ending in .$Ext ---
 if (Have rg) {
     Measure-Tool "ripgrep (--files)" {
-        rg --files $root 2>$null | Select-String -SimpleMatch ".$Ext"
+        rg --files $root 2>$null | Where-Object { $_ -like "*.$Ext" }
     }
 }
 
@@ -100,4 +110,8 @@ foreach ($r in $results) {
     $label  = if ($r.Tool -like "needle*") { "baseline" } else { "${factor}x slower" }
     Write-Host ("  {0,-26} {1,11} ms   {2}" -f $r.Tool, $r.Ms, $label)
 }
+Write-Host ""
+Write-Host "Note: times are end-to-end wall-clock and include ~5-7 ms of process" -ForegroundColor DarkGray
+Write-Host "startup per tool. needle's pure in-index query time is sub-millisecond" -ForegroundColor DarkGray
+Write-Host "(see ./bench.ps1); startup is negligible against traversal tools' seconds." -ForegroundColor DarkGray
 Write-Host ""
