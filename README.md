@@ -130,6 +130,28 @@ millisecond. Latency for the last two scales only because the benchmark returns
 For comparison, before the inverted index every query was a full ~2.3M-entry scan
 at ~360 ms — the extension index is a ~400x speedup on the common cases.
 
+### Head-to-head vs other tools
+
+The same **whole-drive** search — every `*.rs` on a 2.27M-file `D:` drive (601
+matches, identical for all tools) — measured end-to-end with `demo/compare.ps1`:
+
+| tool                          | type            | time       | vs needle   |
+|-------------------------------|-----------------|-----------:|-------------|
+| **needle**                    | NTFS MFT index  | **8.4 ms** | baseline    |
+| es.exe (Everything)           | NTFS MFT index  | 25.9 ms    | 3x slower   |
+| fd                            | parallel walk   | 667 ms     | 79x slower  |
+| cmd `dir /s /b`               | directory walk  | 4894 ms    | 583x slower |
+| PowerShell `Get-ChildItem`    | directory walk  | 4733 ms    | 563x slower |
+| ripgrep `--files`             | directory walk  | 8811 ms    | 1049x slower|
+
+needle outpaces not just traversal tools (by ~80–1000x) but also Everything's own
+CLI — both read the MFT, but needle answers from a warm in-process index. Times
+are end-to-end wall-clock (incl. ~5–7 ms process startup); needle's pure in-index
+query is sub-millisecond (see above). Reproduce with `demo/compare.ps1`.
+
+> `fff` is not in this table: it is a library / MCP server, not a CLI, so it
+> cannot be invoked from the shell for a head-to-head.
+
 ## `fast_glob` tool parameters
 
 | param               | default | meaning                                              |
