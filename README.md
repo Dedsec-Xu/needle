@@ -33,6 +33,38 @@ in-memory hash scan — sub-millisecond, even across millions of files.
 needle is the one you want when the agent's search space is "the computer," not
 "the repo."
 
+## Example agent workflows
+
+Things an agent can do in milliseconds with `fast_glob` that are slow or
+impossible with a project-scoped, traversal-based Glob:
+
+- **"Find every MP3 scattered across my drives and move them into `D:\Music`."**
+  `fast_glob("**/*.mp3")` returns every match on every NTFS volume instantly; the
+  agent then organizes them. A built-in Glob can't even see outside the project.
+
+- **"Open that tax PDF from last year — it has `2024` in the name."**
+  `fast_glob("**/*2024*.pdf")` across the whole machine finds it in <1 ms, no
+  "which folder did I save it in?" hunting.
+
+- **"Security sweep: list every private key and `.env` on this box."**
+  `fast_glob("**/*.pem")`, `fast_glob("**/*.key")`, `fast_glob("**/.env")` —
+  whole-machine, in milliseconds, instead of crawling every directory.
+
+- **"Inventory every project on this machine."**
+  `fast_glob("**/Cargo.toml")`, `fast_glob("**/package.json")`,
+  `fast_glob("**/*.sln")` to map all repos/solutions across drives at once.
+
+- **"I have my résumé saved in five places — find them all."**
+  `fast_glob("**/*resume*")` / `fast_glob("**/*résumé*")` surfaces every copy
+  machine-wide so the agent can dedupe.
+
+- **"Reclaim space: where are all the `node_modules` / `target` build dirs?"**
+  `fast_glob("**/node_modules")`, `fast_glob("**/target")` finds build junk
+  across every repo on every drive in one shot.
+
+Because needle returns absolute paths from a warm whole-machine index, the agent
+spends its turn *acting* on the files rather than walking the tree to find them.
+
 ## Architecture
 
 Reading the MFT requires administrator rights, but an MCP client launches its

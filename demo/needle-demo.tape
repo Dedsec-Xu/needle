@@ -35,7 +35,7 @@ Sleep 3s
 # drive choice here is purely about a fast, dramatic benchmark, not privacy.
 Type "./demo/compare.ps1 -Ext rs -Drive D" Sleep 500ms Enter
 # The run warms the index then times every tool; ~13s on a 2M-file drive.
-Sleep 14s
+Sleep 20s
 
 # Hold on the final speedup table so it's readable before the GIF loops.
 Sleep 7s
