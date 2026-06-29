@@ -299,12 +299,8 @@ fn sort_hits(hits: &mut [Hit], key: SortKey, order: Order) {
                 .to_ascii_lowercase()
                 .cmp(&basename(&b.path).to_ascii_lowercase())
         }),
-        SortKey::Mtime => hits.sort_by(|a, b| {
-            a.mtime
-                .unwrap_or(i64::MIN)
-                .cmp(&b.mtime.unwrap_or(i64::MIN))
-        }),
-        SortKey::Size => hits.sort_by(|a, b| a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0))),
+        SortKey::Mtime => hits.sort_by_key(|a| a.mtime.unwrap_or(i64::MIN)),
+        SortKey::Size => hits.sort_by_key(|a| a.size.unwrap_or(0)),
         SortKey::None => {}
     }
     if order == Order::Desc {
