@@ -1,0 +1,122 @@
+# needle
+
+**Find any file on your machine, instantly — a whole-machine file-search MCP for AI agents. Windows / NTFS.**
+
+`needle` reads the NTFS **MFT** (Master File Table) directly and keeps a warm
+in-memory index that is refreshed incrementally from the **USN Journal**. It
+exposes a single `fast_glob` MCP tool so a coding agent (Claude Code, etc.) can
+locate any file on the **entire machine** — every NTFS drive, millions of
+files — in well under a millisecond, instead of walking the filesystem.
+
+> Filenames and paths only — **not** file contents. Use Grep/ripgrep for content.
+
+## Why needle exists (and how it differs from fff)
+
+Tools like [`fff`](https://github.com/dmtrKovalenko/fff) optimize search **inside
+one project**: directory traversal, fuzzy matching, frecency ranking — tuned for
+a human in an editor who already knows roughly where they are.
+
+An **agent** has a different need: it often has to find things **across the whole
+machine** with no prior knowledge of where they live — a config under
+`C:\Users`, an SDK in `Program Files`, a sibling repo on another drive. Walking
+the tree for that is slow and burns context. `needle` indexes **every NTFS
+volume at once** by reading the MFT, so a whole-disk lookup is as cheap as an
+in-memory hash scan.
+
+|                      | fff                          | needle                            |
+|----------------------|------------------------------|-----------------------------------|
+| Scope                | one project / directory      | **whole machine, all NTFS drives**|
+| Backend              | directory traversal (walk)   | **raw MFT + USN Journal**         |
+| Whole-disk lookup    | slow (must walk)             | **<1ms (in-memory)**              |
+| Privileges           | user-space                   | admin (MFT read)                  |
+| Platform             | cross-platform               | **Windows / NTFS only**           |
+| Audience             | human-in-editor              | **autonomous agent**              |
+
+Different jobs. `needle` is the one you want when the agent's search space is
+"the computer," not "the repo."
+
+## Architecture
+
+Reading the MFT requires administrator rights, but an MCP client launches its
+servers non-elevated. So needle splits into two roles across that boundary:
+
+```
+needle serve   (ADMIN, long-running daemon)
+  ├─ builds the MFT index per drive on first query
+  ├─ FSCTL_READ_USN_JOURNAL every 2s -> incremental index updates
+  └─ answers queries over loopback TCP 127.0.0.1:48923
+
+needle mcp     (non-elevated, launched by the agent / MCP client)
+  └─ exposes the `fast_glob` MCP tool, forwards queries to the daemon
+```
+
+The daemon exists purely to cross the privilege boundary — it is the only part
+that needs admin. The MCP frontend is a thin, stateless forwarder.
+
+## Build
+
+```sh
+cargo build --release
+```
+
+## Run
+
+1. **Start the daemon (admin, leave it running):**
+
+   ```powershell
+   ./start-daemon.ps1          # self-elevates via UAC
+   # or, in an already-elevated shell:
+   ./target/release/needle.exe serve
+   ```
+
+2. **Register the MCP server.** A project-scoped `.mcp.json` is included; or add
+   it globally to Claude Code:
+
+   ```sh
+   claude mcp add needle -- "D:\\path\\to\\needle\\target\\release\\needle.exe" mcp
+   ```
+
+3. The `fast_glob` tool becomes available. To make the agent prefer it over the
+   built-in Glob, add to your `CLAUDE.md`:
+
+   > To find files by name or path anywhere on this machine, use the `fast_glob`
+   > MCP tool instead of the built-in Glob — it is far faster and sees every
+   > drive. Use Grep for file-content search.
+
+## CLI (ad-hoc; must itself be elevated)
+
+```sh
+# one-shot query (builds the index in-process)
+needle query "**/*.rs" --root "D:\path\to\project" --max-results 50
+
+# query the whole machine (no root scope)
+needle query "**/appsettings.json"
+
+# benchmark a full index build for a drive
+needle index C
+```
+
+## `fast_glob` tool parameters
+
+| param               | default | meaning                                              |
+|---------------------|---------|------------------------------------------------------|
+| `pattern`           | —       | glob matched vs the path relative to `root`          |
+| `root`              | `""`    | scope to this directory; empty = **whole volume**    |
+| `max_results`       | `200`   | cap on returned paths                                |
+| `respect_gitignore` | `true`  | apply `root/.gitignore`, always skip `.git`          |
+
+Patterns are case-insensitive and matched against forward-slash-normalized paths,
+so `**/*.swift`, `src/**/*.rs`, and `**/Cargo.toml` all behave as expected.
+
+## Limitations
+
+- **Windows + NTFS only.** The MFT/USN approach has no equivalent on
+  ext4/APFS/etc.; non-NTFS volumes are skipped.
+- The daemon requires administrator privileges.
+- The current matcher scans all indexed entries per query and reconstructs each
+  path on demand. Fast enough for interactive agent use, but a leaf-name prefix
+  index would further speed up very hot query loops.
+
+## License
+
+MIT

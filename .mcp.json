@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "needle": {
+      "command": "D:\\Workspace_local\\everything-claude\\needle\\target\\release\\needle.exe",
+      "args": ["mcp"]
+    }
+  }
+}
