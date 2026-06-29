@@ -1,4 +1,6 @@
-# needle
+# Needle
+
+*Helps you find the needle in the haystack.*
 
 [![CI](https://github.com/Dedsec-Xu/needle/actions/workflows/ci.yml/badge.svg)](https://github.com/Dedsec-Xu/needle/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Dedsec-Xu/needle?sort=semver)](https://github.com/Dedsec-Xu/needle/releases)
@@ -7,7 +9,7 @@
 
 **Find any file on your machine, instantly — a whole-machine file-search MCP for AI agents. Windows / NTFS.**
 
-![an agent using needle's fast_glob to find and organize every mp3 on the machine](demo/needle-agent-demo.gif)
+![an agent using Needle's fast_glob to find and organize every mp3 on the machine](demo/needle-agent-demo.gif)
 
 `needle` reads the NTFS **MFT** (Master File Table) directly and keeps a warm
 in-memory index that is refreshed incrementally from the **USN Journal**. It
@@ -17,7 +19,7 @@ files — in well under a millisecond, instead of walking the filesystem.
 
 > Filenames and paths only — **not** file contents. Use Grep/ripgrep for content.
 
-## Why needle exists
+## Why Needle exists
 
 Most file-search tools optimize search **inside one project**: directory
 traversal, fuzzy matching, ranking — tuned for a human in an editor who already
@@ -30,7 +32,7 @@ the tree for that is slow and burns context. `needle` indexes **every NTFS
 volume at once** by reading the MFT, so a whole-disk lookup is as cheap as an
 in-memory hash scan — sub-millisecond, even across millions of files.
 
-needle is the one you want when the agent's search space is "the computer," not
+Needle is the one you want when the agent's search space is "the computer," not
 "the repo."
 
 ## Example agent workflows
@@ -62,13 +64,13 @@ impossible with a project-scoped, traversal-based Glob:
   `fast_glob("**/node_modules")`, `fast_glob("**/target")` finds build junk
   across every repo on every drive in one shot.
 
-Because needle returns absolute paths from a warm whole-machine index, the agent
+Because Needle returns absolute paths from a warm whole-machine index, the agent
 spends its turn *acting* on the files rather than walking the tree to find them.
 
 ## Architecture
 
 Reading the MFT requires administrator rights, but an MCP client launches its
-servers non-elevated. So needle splits into two roles across that boundary:
+servers non-elevated. So Needle splits into two roles across that boundary:
 
 ```
 needle serve   (ADMIN, long-running daemon)
@@ -139,7 +141,7 @@ cargo build --release
    ```
    </details>
 
-2. **Register the MCP server** with your agent. needle speaks plain
+2. **Register the MCP server** with your agent. Needle speaks plain
    [MCP](https://modelcontextprotocol.io) over stdio, so any MCP-capable agent
    can use it — the command is always `needle.exe mcp`. A project-scoped
    `.mcp.json` is included; pick your agent below.
@@ -310,15 +312,15 @@ Coding agents find files with their **built-in Glob/Grep tools** — ripgrep-sty
    outside the project root — other repos, SDKs in `Program Files`, configs under
    `C:\Users`. For those, traversal isn't slow, it simply returns nothing.
 
-needle replaces both: a warm MFT index over the **whole machine**, answered from
+Needle replaces both: a warm MFT index over the **whole machine**, answered from
 memory. Same whole-drive search — every `*.rs` on a 2.27M-file drive, 601 matches,
 identical results for every tool — measured end-to-end with `demo/compare.ps1`:
 
-![needle vs traversal tools on the same whole-drive search](demo/needle-demo.gif)
+![Needle vs traversal tools on the same whole-drive search](demo/needle-demo.gif)
 
-| tool                                   | how it works     | time       | vs needle    |
+| tool                                   | how it works     | time       | vs Needle    |
 |----------------------------------------|------------------|-----------:|--------------|
-| **needle**                             | NTFS MFT index   | **8.4 ms** | baseline     |
+| **Needle**                             | NTFS MFT index   | **8.4 ms** | baseline     |
 | **ripgrep** (what Glob/Grep run on)    | directory walk   | 8811 ms    | **1049x slower** |
 | PowerShell `Get-ChildItem`             | directory walk   | 4733 ms    | 563x slower  |
 | cmd `dir /s /b`                        | directory walk   | 4894 ms    | 583x slower  |
@@ -327,9 +329,9 @@ identical results for every tool — measured end-to-end with `demo/compare.ps1`
 
 The tool your agent already uses — **ripgrep-based traversal — is ~1000x slower**
 here, and that's only for files *inside* the project; whole-machine lookups it
-can't do at all. needle even edges out Everything's own CLI (both read the MFT,
-but needle answers from a warm in-process index). Times are end-to-end wall-clock
-(incl. ~5–7 ms process startup); needle's pure in-index query is sub-millisecond.
+can't do at all. Needle even edges out Everything's own CLI (both read the MFT,
+but Needle answers from a warm in-process index). Times are end-to-end wall-clock
+(incl. ~5–7 ms process startup); Needle's pure in-index query is sub-millisecond.
 Reproduce with `demo/compare.ps1`.
 
 ## `fast_glob` tool parameters
@@ -353,7 +355,7 @@ behave as expected.
 
 `sort=none` is the default and keeps the **sub-millisecond** streaming path — use
 it whenever order doesn't matter. `sort=mtime` / `sort=size` answer "most recent"
-and "largest" intents: the index finds the candidates, then needle **lazily
+and "largest" intents: the index finds the candidates, then Needle **lazily
 stats** them to fill `size`/`mtime`, sorts locally, and returns the top
 `max_results`. Pair with `order=desc`:
 
@@ -368,7 +370,7 @@ fast_glob({ "pattern": "**/*.log", "root": "D:\\proj", "sort": "size", "order": 
 Metadata sorting stats up to 5000 matched candidates; beyond that the result is
 flagged `sort_approximate` (top-k over an arbitrary subset) rather than scanning
 millions of files. By design, `size`/`mtime` are **not** stored in the index —
-needle stays a search primitive, not a metadata database.
+Needle stays a search primitive, not a metadata database.
 
 ## Limitations
 
