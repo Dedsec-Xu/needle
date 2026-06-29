@@ -47,6 +47,19 @@ enum Cmd {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Query the running daemon and print matching paths (fast; no admin needed).
+    Find {
+        /// Glob pattern, e.g. "**/*.rs".
+        pattern: String,
+        #[arg(long, default_value = "")]
+        root: String,
+        #[arg(long, default_value_t = 200)]
+        max_results: usize,
+        #[arg(long, default_value_t = false)]
+        respect_gitignore: bool,
+        #[arg(long, default_value = DEFAULT_ADDR)]
+        addr: String,
+    },
     /// Build the index for a drive and report stats (warms cache / benchmark).
     Index {
         #[arg(default_value = "C")]
@@ -80,6 +93,13 @@ fn main() -> Result<()> {
             respect_gitignore,
             json,
         } => run_query(&pattern, &root, max_results, respect_gitignore, json),
+        Cmd::Find {
+            pattern,
+            root,
+            max_results,
+            respect_gitignore,
+            addr,
+        } => run_find(&addr, &pattern, &root, max_results, respect_gitignore),
         Cmd::Index { drive } => run_index(drive),
         Cmd::Bench { drive } => run_bench(drive),
         Cmd::Serve { addr } => run_serve(&addr),
@@ -115,6 +135,37 @@ fn run_query(
         stats.returned,
         if stats.truncated { " (truncated)" } else { "" },
         stats.elapsed_ms,
+    );
+    Ok(())
+}
+
+fn run_find(
+    addr: &str,
+    pattern: &str,
+    root: &str,
+    max_results: usize,
+    respect_gitignore: bool,
+) -> Result<()> {
+    let q = WireQuery {
+        root: root.to_string(),
+        pattern: pattern.to_string(),
+        max_results,
+        respect_gitignore,
+    };
+    let resp = daemon_query(addr, &q)?;
+    if !resp.ok {
+        return Err(anyhow!(resp.error.unwrap_or_else(|| "daemon error".into())));
+    }
+    for h in &resp.hits {
+        println!("{}", h.path);
+    }
+    eprintln!(
+        "[needle] {} match(es){} in {:.2}ms (scanned {} on drive {})",
+        resp.returned,
+        if resp.truncated { " (truncated)" } else { "" },
+        resp.elapsed_ms,
+        resp.scanned,
+        resp.drive,
     );
     Ok(())
 }
