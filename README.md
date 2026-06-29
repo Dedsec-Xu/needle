@@ -39,7 +39,8 @@ servers non-elevated. So needle splits into two roles across that boundary:
 ```
 needle serve   (ADMIN, long-running daemon)
   ├─ builds the MFT index per drive on first query
-  ├─ FSCTL_READ_USN_JOURNAL every 2s -> incremental index updates
+  ├─ one watcher thread per drive BLOCKS on FSCTL_READ_USN_JOURNAL and applies
+  │  each change the instant NTFS records it (Everything-style; 0 idle CPU)
   └─ answers queries over loopback TCP 127.0.0.1:48923
 
 needle mcp     (non-elevated, launched by the agent / MCP client)
@@ -48,7 +49,7 @@ needle mcp     (non-elevated, launched by the agent / MCP client)
 
 The daemon exists purely to cross the privilege boundary — it is the only part
 that needs admin. The MCP frontend is a thin, stateless forwarder. Installed as a
-Windows service (`install-service.ps1`), the daemon runs as LocalSystem and
+Windows service (`needle service install`), the daemon runs as LocalSystem and
 auto-starts at boot, so the privilege boundary is crossed once at install time
 and never again — the agent's non-elevated MCP process just connects to it.
 
@@ -70,7 +71,8 @@ scoop install https://raw.githubusercontent.com/Dedsec-Xu/needle/main/packaging/
 cargo install --git https://github.com/Dedsec-Xu/needle
 ```
 
-After installing, register the daemon as a service once (from an elevated shell):
+After installing, register the daemon as a service once — it prompts for
+elevation (UAC) automatically, so any shell works:
 
 ```powershell
 needle service install
@@ -84,32 +86,101 @@ cargo build --release
 
 ## Run
 
-1. **Install the daemon as a service (once).** It then runs as LocalSystem and
-   auto-starts at every boot — no manual launch, no UAC prompt afterwards:
+1. **Install the daemon as a service (once).** It runs as LocalSystem and
+   auto-starts at every boot — no manual launch, no recurring UAC prompt:
 
    ```powershell
-   ./install-service.ps1       # self-elevates via UAC, registers + starts 'needled'
+   needle service install      # prompts for elevation (UAC) once
    ```
 
-   Remove it later with `./uninstall-service.ps1`.
+   Remove it later with `needle service uninstall`.
 
    <details><summary>Prefer not to install a service?</summary>
 
-   Run the daemon manually instead (must stay open, re-run after each reboot):
+   Run the daemon manually instead (must stay open, re-run after each reboot)
+   from an elevated shell:
 
    ```powershell
-   ./start-daemon.ps1          # self-elevates via UAC
-   # or, in an already-elevated shell:
-   ./target/release/needle.exe serve
+   needle serve
    ```
    </details>
 
-2. **Register the MCP server.** A project-scoped `.mcp.json` is included; or add
-   it globally to Claude Code:
+2. **Register the MCP server** with your agent. needle speaks plain
+   [MCP](https://modelcontextprotocol.io) over stdio, so any MCP-capable agent
+   can use it — the command is always `needle.exe mcp`. A project-scoped
+   `.mcp.json` is included; pick your agent below.
+
+   <details open><summary><b>Claude Code</b></summary>
 
    ```sh
    claude mcp add needle -- "D:\\path\\to\\needle\\target\\release\\needle.exe" mcp
    ```
+
+   Or drop it into `.mcp.json` (project) / `~/.claude.json` (global):
+
+   ```json
+   {
+     "mcpServers": {
+       "needle": {
+         "command": "D:\\path\\to\\needle\\target\\release\\needle.exe",
+         "args": ["mcp"]
+       }
+     }
+   }
+   ```
+   </details>
+
+   <details><summary><b>Codex</b> (OpenAI Codex CLI)</summary>
+
+   Add to `~/.codex/config.toml`:
+
+   ```toml
+   [mcp_servers.needle]
+   command = "D:\\path\\to\\needle\\target\\release\\needle.exe"
+   args = ["mcp"]
+   ```
+   </details>
+
+   <details><summary><b>Hermes</b> (NousResearch Hermes Agent)</summary>
+
+   Add to the `mcp_servers` section of Hermes' `config.yaml`:
+
+   ```yaml
+   mcp_servers:
+     needle:
+       command: "D:\\path\\to\\needle\\target\\release\\needle.exe"
+       args: ["mcp"]
+   ```
+   </details>
+
+   <details><summary><b>OpenClaw</b></summary>
+
+   Add to `~/.openclaw/openclaw.json` under `mcp.servers` (or use
+   `openclaw mcp add`):
+
+   ```json
+   {
+     "mcp": {
+       "servers": {
+         "needle": {
+           "command": "D:\\path\\to\\needle\\target\\release\\needle.exe",
+           "args": ["mcp"]
+         }
+       }
+     }
+   }
+   ```
+   </details>
+
+   <details><summary><b>Any other MCP client</b></summary>
+
+   Point your client at the stdio command below — that's the whole contract:
+
+   ```
+   command: D:\path\to\needle\target\release\needle.exe
+   args:    ["mcp"]
+   ```
+   </details>
 
 3. The `fast_glob` tool becomes available. To make the agent prefer it over the
    built-in Glob, add to your `CLAUDE.md`:
@@ -155,7 +226,9 @@ whole-volume queries on your own machine:
 
 It prints a ready-to-paste Markdown table: the one-time index-build time plus the
 per-query latency for several whole-volume globs. Queries run against the warm
-in-memory index and stay fresh via the USN Journal.
+in-memory index, which a per-drive watcher thread keeps live by blocking on the
+USN Journal — any file created, deleted, renamed, or moved shows up in the very
+next query, with no rescan and no polling delay.
 
 ### Measured results
 
@@ -177,24 +250,36 @@ millisecond. Latency for the last two scales only because the benchmark returns
 For comparison, before the inverted index every query was a full ~2.3M-entry scan
 at ~360 ms — the extension index is a ~400x speedup on the common cases.
 
-### Head-to-head vs other tools
+### vs what your agent searches with today
 
-The same **whole-drive** search — every `*.rs` on a 2.27M-file `D:` drive (601
-matches, identical for all tools) — measured end-to-end with `demo/compare.ps1`:
+Coding agents find files with their **built-in Glob/Grep tools** — ripgrep-style
+**directory traversal**. Two things make that a poor fit for an autonomous agent:
 
-| tool                          | type            | time       | vs needle   |
-|-------------------------------|-----------------|-----------:|-------------|
-| **needle**                    | NTFS MFT index  | **8.4 ms** | baseline    |
-| es.exe (Everything)           | NTFS MFT index  | 25.9 ms    | 3x slower   |
-| fd                            | parallel walk   | 667 ms     | 79x slower  |
-| cmd `dir /s /b`               | directory walk  | 4894 ms    | 583x slower |
-| PowerShell `Get-ChildItem`    | directory walk  | 4733 ms    | 563x slower |
-| ripgrep `--files`             | directory walk  | 8811 ms    | 1049x slower|
+1. **It walks the tree on every call.** No persistent index; each search re-crawls
+   the filesystem and the cost grows with the tree.
+2. **It can't see past the working directory.** The agent is blind to anything
+   outside the project root — other repos, SDKs in `Program Files`, configs under
+   `C:\Users`. For those, traversal isn't slow, it simply returns nothing.
 
-needle outpaces not just traversal tools (by ~80–1000x) but also Everything's own
-CLI — both read the MFT, but needle answers from a warm in-process index. Times
-are end-to-end wall-clock (incl. ~5–7 ms process startup); needle's pure in-index
-query is sub-millisecond (see above). Reproduce with `demo/compare.ps1`.
+needle replaces both: a warm MFT index over the **whole machine**, answered from
+memory. Same whole-drive search — every `*.rs` on a 2.27M-file drive, 601 matches,
+identical results for every tool — measured end-to-end with `demo/compare.ps1`:
+
+| tool                                   | how it works     | time       | vs needle    |
+|----------------------------------------|------------------|-----------:|--------------|
+| **needle**                             | NTFS MFT index   | **8.4 ms** | baseline     |
+| **ripgrep** (what Glob/Grep run on)    | directory walk   | 8811 ms    | **1049x slower** |
+| PowerShell `Get-ChildItem`             | directory walk   | 4733 ms    | 563x slower  |
+| cmd `dir /s /b`                        | directory walk   | 4894 ms    | 583x slower  |
+| fd (parallel)                          | directory walk   | 667 ms     | 79x slower   |
+| es.exe (Everything)                    | NTFS MFT index   | 25.9 ms    | 3x slower    |
+
+The tool your agent already uses — **ripgrep-based traversal — is ~1000x slower**
+here, and that's only for files *inside* the project; whole-machine lookups it
+can't do at all. needle even edges out Everything's own CLI (both read the MFT,
+but needle answers from a warm in-process index). Times are end-to-end wall-clock
+(incl. ~5–7 ms process startup); needle's pure in-index query is sub-millisecond.
+Reproduce with `demo/compare.ps1`.
 
 ## `fast_glob` tool parameters
 
