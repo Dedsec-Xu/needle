@@ -1,5 +1,5 @@
 {
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Whole-machine sub-millisecond file-search MCP for AI agents (NTFS MFT + USN).",
     "homepage": "https://github.com/Dedsec-Xu/needle",
     "license": "MIT",
@@ -9,8 +9,8 @@
     ],
     "architecture": {
         "64bit": {
-            "url": "https://github.com/Dedsec-Xu/needle/releases/download/v0.1.0/needle-v0.1.0-x86_64-pc-windows-msvc.zip",
-            "hash": "REPLACE_WITH_SHA256_FROM_RELEASE_ASSET"
+            "url": "https://github.com/Dedsec-Xu/needle/releases/download/v0.1.1/needle-v0.1.1-x86_64-pc-windows-msvc.zip",
+            "hash": "288d33ea9587523173a80ee613bf6a0603c300a2b1b805fe585e394637db85e8"
         }
     },
     "bin": "needle.exe",
