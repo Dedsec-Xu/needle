@@ -105,6 +105,13 @@ impl Engine {
         // patterns like `**/*.swift` behave intuitively; if no root, match full path.
         let matcher = build_matcher(q.pattern)?;
 
+        // Cheap pre-filter on the leaf (basename) component of the pattern. Most
+        // globs end in a filename pattern like `*.rs`, so we can reject the vast
+        // majority of entries by matching their `name` field directly — avoiding
+        // the expensive full-path reconstruction for non-candidates. If the last
+        // segment is a `**` wildcard, we cannot pre-filter and fall back to full.
+        let leaf_matcher = leaf_matcher(q.pattern)?;
+
         // Optional .gitignore scoping rooted at `root`.
         let gitignore = if q.respect_gitignore && !q.root.is_empty() {
             build_gitignore(q.root)
@@ -122,9 +129,15 @@ impl Engine {
 
         for (&frn, entry) in idx.entries.iter() {
             scanned += 1;
-            // Cheap pre-filter on the leaf name when the pattern has no slash logic
-            // is skipped for correctness; we always reconstruct the path. To keep
-            // that affordable we only reconstruct when the leaf could plausibly match.
+
+            // Leaf pre-filter: reject on the cheap `name` field before doing any
+            // path reconstruction. This is what keeps queries sub-millisecond.
+            if let Some(lm) = &leaf_matcher {
+                if !lm.is_match(&entry.name) {
+                    continue;
+                }
+            }
+
             let Some(full) = idx.full_path(frn) else {
                 continue;
             };
@@ -223,6 +236,24 @@ fn build_matcher(pattern: &str) -> Result<GlobMatcher> {
         .literal_separator(false)
         .build()?;
     Ok(glob.compile_matcher())
+}
+
+/// Build a matcher for the leaf (last) component of `pattern`, used as a cheap
+/// pre-filter against an entry's basename. Returns `None` when the last segment
+/// is a recursive `**` wildcard (it would match any name, so pre-filtering is
+/// pointless and we must scan fully).
+fn leaf_matcher(pattern: &str) -> Result<Option<GlobMatcher>> {
+    // Normalize separators, then take the final path segment.
+    let leaf = pattern.replace('\\', "/");
+    let leaf = leaf.rsplit('/').next().unwrap_or(pattern);
+    if leaf.is_empty() || leaf.contains("**") {
+        return Ok(None);
+    }
+    let glob = GlobBuilder::new(leaf)
+        .case_insensitive(true)
+        .literal_separator(false)
+        .build()?;
+    Ok(Some(glob.compile_matcher()))
 }
 
 /// Build a Gitignore matcher rooted at `root`, merging root/.gitignore if present.
