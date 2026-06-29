@@ -16,7 +16,7 @@ mod service;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use engine::{Engine, Query};
+use engine::{Engine, Kind, Order, Query, SortKey};
 use ipc::{WireHit, WireQuery, WireResponse, DEFAULT_ADDR};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -47,6 +47,17 @@ enum Cmd {
         max_results: usize,
         #[arg(long, default_value_t = false)]
         respect_gitignore: bool,
+        /// Restrict to "file", "dir", or "any".
+        #[arg(long, default_value = "any")]
+        kind: String,
+        #[arg(long, default_value_t = false)]
+        case_sensitive: bool,
+        /// Sort by "name", "mtime", "size", or "none".
+        #[arg(long, default_value = "none")]
+        sort: String,
+        /// "asc" or "desc".
+        #[arg(long, default_value = "asc")]
+        order: String,
         #[arg(long, default_value_t = false)]
         json: bool,
     },
@@ -60,6 +71,17 @@ enum Cmd {
         max_results: usize,
         #[arg(long, default_value_t = false)]
         respect_gitignore: bool,
+        /// Restrict to "file", "dir", or "any".
+        #[arg(long, default_value = "any")]
+        kind: String,
+        #[arg(long, default_value_t = false)]
+        case_sensitive: bool,
+        /// Sort by "name", "mtime", "size", or "none".
+        #[arg(long, default_value = "none")]
+        sort: String,
+        /// "asc" or "desc".
+        #[arg(long, default_value = "asc")]
+        order: String,
         #[arg(long, default_value = DEFAULT_ADDR)]
         addr: String,
     },
@@ -109,15 +131,43 @@ fn main() -> Result<()> {
             root,
             max_results,
             respect_gitignore,
+            kind,
+            case_sensitive,
+            sort,
+            order,
             json,
-        } => run_query(&pattern, &root, max_results, respect_gitignore, json),
+        } => run_query(QueryArgs {
+            pattern: &pattern,
+            root: &root,
+            max_results,
+            respect_gitignore,
+            kind: &kind,
+            case_sensitive,
+            sort: &sort,
+            order: &order,
+            json,
+        }),
         Cmd::Find {
             pattern,
             root,
             max_results,
             respect_gitignore,
+            kind,
+            case_sensitive,
+            sort,
+            order,
             addr,
-        } => run_find(&addr, &pattern, &root, max_results, respect_gitignore),
+        } => run_find(FindArgs {
+            addr: &addr,
+            pattern: &pattern,
+            root: &root,
+            max_results,
+            respect_gitignore,
+            kind: &kind,
+            case_sensitive,
+            sort: &sort,
+            order: &order,
+        }),
         Cmd::Index { drive } => run_index(drive),
         Cmd::Bench { drive } => run_bench(drive),
         Cmd::Serve { addr } => run_serve(&addr),
@@ -147,21 +197,31 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_query(
-    pattern: &str,
-    root: &str,
+struct QueryArgs<'a> {
+    pattern: &'a str,
+    root: &'a str,
     max_results: usize,
     respect_gitignore: bool,
+    kind: &'a str,
+    case_sensitive: bool,
+    sort: &'a str,
+    order: &'a str,
     json: bool,
-) -> Result<()> {
+}
+
+fn run_query(a: QueryArgs) -> Result<()> {
     let engine = Engine::new();
     let (hits, stats) = engine.query(&Query {
-        root,
-        pattern,
-        max_results,
-        respect_gitignore,
+        root: a.root,
+        pattern: a.pattern,
+        max_results: a.max_results,
+        respect_gitignore: a.respect_gitignore,
+        kind: Kind::parse(a.kind),
+        case_sensitive: a.case_sensitive,
+        sort: SortKey::parse(a.sort),
+        order: Order::parse(a.order),
     })?;
-    if json {
+    if a.json {
         println!("{}", serde_json::to_string_pretty(&hits)?);
     } else {
         for h in &hits {
@@ -169,30 +229,45 @@ fn run_query(
         }
     }
     eprintln!(
-        "[needle] drive {} scanned {} returned {}{} in {:.1}ms",
+        "[needle] drive {} scanned {} returned {}{}{} in {:.1}ms",
         stats.drive,
         stats.scanned,
         stats.returned,
         if stats.truncated { " (truncated)" } else { "" },
+        if stats.sort_approximate {
+            " (sort approximate)"
+        } else {
+            ""
+        },
         stats.elapsed_ms,
     );
     Ok(())
 }
 
-fn run_find(
-    addr: &str,
-    pattern: &str,
-    root: &str,
+struct FindArgs<'a> {
+    addr: &'a str,
+    pattern: &'a str,
+    root: &'a str,
     max_results: usize,
     respect_gitignore: bool,
-) -> Result<()> {
+    kind: &'a str,
+    case_sensitive: bool,
+    sort: &'a str,
+    order: &'a str,
+}
+
+fn run_find(a: FindArgs) -> Result<()> {
     let q = WireQuery {
-        root: root.to_string(),
-        pattern: pattern.to_string(),
-        max_results,
-        respect_gitignore,
+        root: a.root.to_string(),
+        pattern: a.pattern.to_string(),
+        max_results: a.max_results,
+        respect_gitignore: a.respect_gitignore,
+        kind: a.kind.to_string(),
+        case_sensitive: a.case_sensitive,
+        sort: a.sort.to_string(),
+        order: a.order.to_string(),
     };
-    let resp = daemon_query(addr, &q)?;
+    let resp = daemon_query(a.addr, &q)?;
     if !resp.ok {
         return Err(anyhow!(resp.error.unwrap_or_else(|| "daemon error".into())));
     }
@@ -200,9 +275,14 @@ fn run_find(
         println!("{}", h.path);
     }
     eprintln!(
-        "[needle] {} match(es){} in {:.2}ms (scanned {} on drive {})",
+        "[needle] {} match(es){}{} in {:.2}ms (scanned {} on drive {})",
         resp.returned,
         if resp.truncated { " (truncated)" } else { "" },
+        if resp.sort_approximate {
+            " (sort approximate)"
+        } else {
+            ""
+        },
         resp.elapsed_ms,
         resp.scanned,
         resp.drive,
@@ -256,6 +336,10 @@ fn run_bench(drive: char) -> Result<()> {
             pattern: pat,
             max_results: 1_000_000,
             respect_gitignore: false,
+            kind: Kind::Any,
+            case_sensitive: false,
+            sort: SortKey::None,
+            order: Order::Asc,
         })?;
         println!(
             "| `{}` | {} | {:.2} ms |",
@@ -322,6 +406,10 @@ fn serve_conn(stream: TcpStream, engine: &Engine) -> Result<()> {
             pattern: &q.pattern,
             max_results: q.max_results,
             respect_gitignore: q.respect_gitignore,
+            kind: Kind::parse(&q.kind),
+            case_sensitive: q.case_sensitive,
+            sort: SortKey::parse(&q.sort),
+            order: Order::parse(&q.order),
         }) {
             Ok((hits, stats)) => WireResponse {
                 ok: true,
@@ -331,12 +419,15 @@ fn serve_conn(stream: TcpStream, engine: &Engine) -> Result<()> {
                     .map(|h| WireHit {
                         path: h.path,
                         is_dir: h.is_dir,
+                        size: h.size,
+                        mtime: h.mtime,
                     })
                     .collect(),
                 drive: stats.drive.to_string(),
                 scanned: stats.scanned,
                 returned: stats.returned,
                 truncated: stats.truncated,
+                sort_approximate: stats.sort_approximate,
                 elapsed_ms: stats.elapsed_ms,
             },
             Err(e) => err_response(&e.to_string()),
@@ -356,6 +447,7 @@ fn err_response(msg: &str) -> WireResponse {
         scanned: 0,
         returned: 0,
         truncated: false,
+        sort_approximate: false,
         elapsed_ms: 0.0,
     }
 }
@@ -459,6 +551,29 @@ fn tools_list() -> Value {
                         "type": "boolean",
                         "description": "Apply the project's .gitignore and always skip .git (default true).",
                         "default": true
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["any", "file", "dir"],
+                        "description": "Restrict results to files, directories, or any (default any).",
+                        "default": "any"
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "Case-sensitive pattern matching (default false).",
+                        "default": false
+                    },
+                    "sort": {
+                        "type": "string",
+                        "enum": ["none", "name", "mtime", "size"],
+                        "description": "Sort results. 'mtime'/'size' lazily stat matched files (good for 'most recent' or 'largest'); over ~5000 matches the top-k becomes approximate. Default none (fastest).",
+                        "default": "none"
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["asc", "desc"],
+                        "description": "Sort order (default asc). Use 'desc' with sort=mtime for newest-first, or sort=size for largest-first.",
+                        "default": "asc"
                     }
                 },
                 "required": ["pattern"]
@@ -502,6 +617,25 @@ fn handle_tool_call(id: Option<Value>, req: &Value, addr: &str) -> Value {
             .get("respect_gitignore")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        kind: args
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("any")
+            .to_string(),
+        case_sensitive: args
+            .get("case_sensitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        sort: args
+            .get("sort")
+            .and_then(|v| v.as_str())
+            .unwrap_or("none")
+            .to_string(),
+        order: args
+            .get("order")
+            .and_then(|v| v.as_str())
+            .unwrap_or("asc")
+            .to_string(),
     };
 
     match daemon_query(addr, &q) {

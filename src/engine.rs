@@ -11,12 +11,85 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Instant;
 
-/// A single query result row.
+/// A single query result row. `size`/`mtime` are filled only when a metadata
+/// sort was requested (the engine stats matched candidates lazily).
 #[derive(serde::Serialize, Clone)]
 pub struct Hit {
     pub path: String,
     pub is_dir: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime: Option<i64>,
 }
+
+/// Which entries to return.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Kind {
+    Any,
+    File,
+    Dir,
+}
+
+/// Sort key for results.
+#[derive(Clone, Copy, PartialEq)]
+pub enum SortKey {
+    None,
+    Name,
+    Mtime,
+    Size,
+}
+
+/// Sort direction.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Order {
+    Asc,
+    Desc,
+}
+
+impl Kind {
+    pub fn parse(s: &str) -> Kind {
+        match s.to_ascii_lowercase().as_str() {
+            "file" => Kind::File,
+            "dir" | "directory" => Kind::Dir,
+            _ => Kind::Any,
+        }
+    }
+    fn allows(self, is_dir: bool) -> bool {
+        match self {
+            Kind::Any => true,
+            Kind::File => !is_dir,
+            Kind::Dir => is_dir,
+        }
+    }
+}
+
+impl SortKey {
+    pub fn parse(s: &str) -> SortKey {
+        match s.to_ascii_lowercase().as_str() {
+            "name" => SortKey::Name,
+            "mtime" | "modified" | "date" => SortKey::Mtime,
+            "size" => SortKey::Size,
+            _ => SortKey::None,
+        }
+    }
+    fn needs_stat(self) -> bool {
+        matches!(self, SortKey::Mtime | SortKey::Size)
+    }
+}
+
+impl Order {
+    pub fn parse(s: &str) -> Order {
+        match s.to_ascii_lowercase().as_str() {
+            "desc" | "descending" => Order::Desc,
+            _ => Order::Asc,
+        }
+    }
+}
+
+/// Max candidates the engine will lazily stat for a metadata sort. Beyond this,
+/// top-k by mtime/size is approximate (computed over an arbitrary subset).
+const STAT_CAP: usize = 5000;
 
 /// Parameters for a fast_glob query.
 pub struct Query<'a> {
@@ -27,6 +100,10 @@ pub struct Query<'a> {
     pub pattern: &'a str,
     pub max_results: usize,
     pub respect_gitignore: bool,
+    pub kind: Kind,
+    pub case_sensitive: bool,
+    pub sort: SortKey,
+    pub order: Order,
 }
 
 /// Holds one cached index per drive letter. Each index is an `Arc<RwLock<_>>` so
@@ -111,14 +188,14 @@ impl Engine {
 
         // Build the glob matcher. We match against the path *relative to root* so
         // patterns like `**/*.swift` behave intuitively; if no root, match full path.
-        let matcher = build_matcher(q.pattern)?;
+        let matcher = build_matcher(q.pattern, q.case_sensitive)?;
 
         // Cheap pre-filter on the leaf (basename) component of the pattern. Most
         // globs end in a filename pattern like `*.rs`, so we can reject the vast
         // majority of entries by matching their `name` field directly — avoiding
         // the expensive full-path reconstruction for non-candidates. If the last
         // segment is a `**` wildcard, we cannot pre-filter and fall back to full.
-        let leaf_matcher = leaf_matcher(q.pattern)?;
+        let leaf_matcher = leaf_matcher(q.pattern, q.case_sensitive)?;
 
         // Optional .gitignore scoping rooted at `root`.
         let gitignore = if q.respect_gitignore && !q.root.is_empty() {
@@ -133,19 +210,28 @@ impl Engine {
         // the inverted-index trick that makes whole-volume queries sub-millisecond.
         let required_ext = required_ext(q.pattern);
 
+        // Without a sort we stream and stop at `max_results` (the sub-millisecond
+        // fast path). With a sort we must see the whole candidate set before
+        // picking top-k, so we collect up to STAT_CAP and sort afterwards.
+        let collect_cap = if q.sort == SortKey::None {
+            q.max_results
+        } else {
+            STAT_CAP.max(q.max_results)
+        };
+
         let mut hits = Vec::new();
         let mut scanned = 0usize;
-        let mut truncated = false;
+        let mut cap_hit = false;
 
         let map = self.indices.read().unwrap();
         for &drive in &drives {
-            if hits.len() >= q.max_results {
-                truncated = true;
+            if hits.len() >= collect_cap {
+                cap_hit = true;
                 break;
             }
             let Some(idx) = map.get(&drive) else { continue };
             let idx = idx.read().unwrap();
-            let remaining = q.max_results - hits.len();
+            let remaining = collect_cap - hits.len();
             let (s, t) = scan_index(
                 &idx,
                 &root_norm,
@@ -153,13 +239,40 @@ impl Engine {
                 &leaf_matcher,
                 &gitignore,
                 &required_ext,
+                q.kind,
                 remaining,
                 &mut hits,
             );
             scanned += s;
-            truncated |= t;
+            cap_hit |= t;
         }
         drop(map);
+
+        let mut truncated = cap_hit;
+        let mut sort_approximate = false;
+        if q.sort != SortKey::None {
+            // A metadata sort needs file size/mtime, fetched lazily per candidate.
+            if q.sort.needs_stat() {
+                for h in hits.iter_mut() {
+                    if let Ok(md) = std::fs::metadata(&h.path) {
+                        h.size = Some(md.len());
+                        if let Ok(t) = md.modified() {
+                            if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+                                h.mtime = Some(d.as_millis() as i64);
+                            }
+                        }
+                    }
+                }
+            }
+            sort_hits(&mut hits, q.sort, q.order);
+            // If we filled the candidate cap, top-k is over an arbitrary subset.
+            sort_approximate = cap_hit;
+            truncated = false;
+            if hits.len() > q.max_results {
+                hits.truncate(q.max_results);
+                truncated = true;
+            }
+        }
 
         let drive = drives
             .iter()
@@ -171,10 +284,35 @@ impl Engine {
             scanned,
             returned: hits.len(),
             truncated,
+            sort_approximate,
             elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
         };
         Ok((hits, stats))
     }
+}
+
+/// Sort hits in place by the requested key and order.
+fn sort_hits(hits: &mut [Hit], key: SortKey, order: Order) {
+    match key {
+        SortKey::Name => hits.sort_by(|a, b| {
+            basename(&a.path)
+                .to_ascii_lowercase()
+                .cmp(&basename(&b.path).to_ascii_lowercase())
+        }),
+        SortKey::Mtime => {
+            hits.sort_by(|a, b| a.mtime.unwrap_or(i64::MIN).cmp(&b.mtime.unwrap_or(i64::MIN)))
+        }
+        SortKey::Size => hits.sort_by(|a, b| a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0))),
+        SortKey::None => {}
+    }
+    if order == Order::Desc {
+        hits.reverse();
+    }
+}
+
+/// Final path component (filename) of a Windows path.
+fn basename(path: &str) -> &str {
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
 /// Scan a single drive's index, appending up to `remaining` hits. Returns
@@ -188,6 +326,7 @@ fn scan_index(
     leaf_matcher: &Option<GlobMatcher>,
     gitignore: &Option<Gitignore>,
     required_ext: &Option<String>,
+    kind: Kind,
     remaining: usize,
     hits: &mut Vec<Hit>,
 ) -> (usize, bool) {
@@ -197,6 +336,9 @@ fn scan_index(
 
     // Per-entry match: reconstruct path, apply root scope, glob, gitignore.
     let try_one = |frn: u64, entry: &crate::mft::Entry| -> Option<Hit> {
+        if !kind.allows(entry.is_dir) {
+            return None;
+        }
         let full = idx.full_path(frn)?;
 
         let rel = if root_norm.is_empty() {
@@ -231,6 +373,8 @@ fn scan_index(
         Some(Hit {
             path: full,
             is_dir: entry.is_dir,
+            size: None,
+            mtime: None,
         })
     };
 
@@ -281,6 +425,8 @@ pub struct QueryStats {
     pub scanned: usize,
     pub returned: usize,
     pub truncated: bool,
+    /// True when a metadata sort hit the lazy-stat cap, so top-k is approximate.
+    pub sort_approximate: bool,
     pub elapsed_ms: f64,
 }
 
@@ -303,10 +449,10 @@ fn normalize_prefix(root: &str) -> String {
     root.trim_end_matches(['\\', '/']).to_ascii_lowercase()
 }
 
-/// Build a case-insensitive glob matcher with `**` enabled across separators.
-fn build_matcher(pattern: &str) -> Result<GlobMatcher> {
+/// Build a glob matcher with `**` enabled across separators.
+fn build_matcher(pattern: &str, case_sensitive: bool) -> Result<GlobMatcher> {
     let glob = GlobBuilder::new(pattern)
-        .case_insensitive(true)
+        .case_insensitive(!case_sensitive)
         .literal_separator(false)
         .build()?;
     Ok(glob.compile_matcher())
@@ -316,7 +462,7 @@ fn build_matcher(pattern: &str) -> Result<GlobMatcher> {
 /// pre-filter against an entry's basename. Returns `None` when the last segment
 /// is a recursive `**` wildcard (it would match any name, so pre-filtering is
 /// pointless and we must scan fully).
-fn leaf_matcher(pattern: &str) -> Result<Option<GlobMatcher>> {
+fn leaf_matcher(pattern: &str, case_sensitive: bool) -> Result<Option<GlobMatcher>> {
     // Normalize separators, then take the final path segment.
     let leaf = pattern.replace('\\', "/");
     let leaf = leaf.rsplit('/').next().unwrap_or(pattern);
@@ -324,7 +470,7 @@ fn leaf_matcher(pattern: &str) -> Result<Option<GlobMatcher>> {
         return Ok(None);
     }
     let glob = GlobBuilder::new(leaf)
-        .case_insensitive(true)
+        .case_insensitive(!case_sensitive)
         .literal_separator(false)
         .build()?;
     Ok(Some(glob.compile_matcher()))

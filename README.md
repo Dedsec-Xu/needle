@@ -7,7 +7,7 @@
 
 **Find any file on your machine, instantly — a whole-machine file-search MCP for AI agents. Windows / NTFS.**
 
-![needle demo](demo/needle-demo.gif)
+![an agent using needle's fast_glob to find and organize every mp3 on the machine](demo/needle-agent-demo.gif)
 
 `needle` reads the NTFS **MFT** (Master File Table) directly and keeps a warm
 in-memory index that is refreshed incrementally from the **USN Journal**. It
@@ -298,6 +298,8 @@ Coding agents find files with their **built-in Glob/Grep tools** — ripgrep-sty
 needle replaces both: a warm MFT index over the **whole machine**, answered from
 memory. Same whole-drive search — every `*.rs` on a 2.27M-file drive, 601 matches,
 identical results for every tool — measured end-to-end with `demo/compare.ps1`:
+
+![needle vs traversal tools on the same whole-drive search](demo/needle-demo.gif)
 
 | tool                                   | how it works     | time       | vs needle    |
 |----------------------------------------|------------------|-----------:|--------------|

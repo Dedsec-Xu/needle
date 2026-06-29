@@ -2,3 +2,7 @@
 **/*.rs.bk
 *.pdb
 /bench-result.md
+
+# VHS recording sources -- the generated .gif is committed, the tape/script is not.
+demo/*.tape
+demo/mock-agent.ps1
