@@ -85,10 +85,12 @@ if (Have fd) {
     }
 }
 
-# --- ripgrep --files (traversal); match files actually ending in .$Ext ---
+# --- ripgrep --files (traversal); match files ending in .$Ext.
+# --no-ignore --hidden so it lists ALL files (apples-to-apples with the others),
+# not just files outside .gitignore/.ignore and non-hidden ones. ---
 if (Have rg) {
     Measure-Tool "ripgrep (--files)" {
-        rg --files $root 2>$null | Where-Object { $_ -like "*.$Ext" }
+        rg --files --no-ignore --hidden $root 2>$null | Where-Object { $_ -like "*.$Ext" }
     }
 }
 
