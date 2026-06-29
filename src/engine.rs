@@ -119,6 +119,12 @@ impl Engine {
             None
         };
 
+        // If the pattern's leaf pins a fixed extension (e.g. `*.rs`, `*test*.rs`,
+        // `Cargo.toml`), we only iterate that extension's bucket instead of every
+        // entry — turning an O(all files) scan into O(matching extension). This is
+        // the inverted-index trick that makes whole-volume queries sub-millisecond.
+        let required_ext = required_ext(q.pattern);
+
         let map = self.indices.read().unwrap();
         let idx = map.get(&drive).ok_or_else(|| anyhow!("drive not indexed"))?;
         let idx = idx.read().unwrap();
@@ -127,30 +133,17 @@ impl Engine {
         let mut scanned = 0usize;
         let mut truncated = false;
 
-        for (&frn, entry) in idx.entries.iter() {
-            scanned += 1;
+        // Per-entry match: reconstruct path, apply root scope, glob, gitignore.
+        let try_one = |frn: u64, entry: &crate::mft::Entry| -> Option<Hit> {
+            let full = idx.full_path(frn)?;
 
-            // Leaf pre-filter: reject on the cheap `name` field before doing any
-            // path reconstruction. This is what keeps queries sub-millisecond.
-            if let Some(lm) = &leaf_matcher {
-                if !lm.is_match(&entry.name) {
-                    continue;
-                }
-            }
-
-            let Some(full) = idx.full_path(frn) else {
-                continue;
-            };
-
-            // Root scoping.
             let rel = if root_norm.is_empty() {
                 full.as_str()
             } else {
                 let full_lower = full.to_ascii_lowercase();
                 if !full_lower.starts_with(&root_norm) {
-                    continue;
+                    return None;
                 }
-                // +1 to drop the separating backslash.
                 let cut = root_norm.len();
                 let bytes = full.as_bytes();
                 let start = if cut < bytes.len() && bytes[cut] == b'\\' {
@@ -161,30 +154,60 @@ impl Engine {
                 &full[start..]
             };
             if rel.is_empty() {
-                continue;
+                return None;
             }
 
-            // Match against forward-slash-normalized relative path (globset convention).
             let rel_fwd = rel.replace('\\', "/");
             if !matcher.is_match(&rel_fwd) {
-                continue;
+                return None;
             }
-
-            // gitignore filtering (best-effort; checks the full path).
             if let Some(gi) = &gitignore {
-                let p = Path::new(&full);
-                if gi.matched(p, entry.is_dir).is_ignore() {
-                    continue;
+                if gi.matched(Path::new(&full), entry.is_dir).is_ignore() {
+                    return None;
                 }
             }
-
-            hits.push(Hit {
+            Some(Hit {
                 path: full,
                 is_dir: entry.is_dir,
-            });
-            if hits.len() >= q.max_results {
-                truncated = true;
-                break;
+            })
+        };
+
+        match required_ext {
+            // Fast path: only walk the extension bucket.
+            Some(ext) => {
+                if let Some(bucket) = idx.by_ext.get(&ext) {
+                    for &frn in bucket {
+                        scanned += 1;
+                        if let Some(entry) = idx.entries.get(&frn) {
+                            if let Some(hit) = try_one(frn, entry) {
+                                hits.push(hit);
+                                if hits.len() >= q.max_results {
+                                    truncated = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Fallback: no fixed extension (e.g. `Makefile`, `foo*`, `**/x/**`).
+            // Full scan with the cheap leaf pre-filter on the basename.
+            None => {
+                for (&frn, entry) in idx.entries.iter() {
+                    scanned += 1;
+                    if let Some(lm) = &leaf_matcher {
+                        if !lm.is_match(&entry.name) {
+                            continue;
+                        }
+                    }
+                    if let Some(hit) = try_one(frn, entry) {
+                        hits.push(hit);
+                        if hits.len() >= q.max_results {
+                            truncated = true;
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -254,6 +277,31 @@ fn leaf_matcher(pattern: &str) -> Result<Option<GlobMatcher>> {
         .literal_separator(false)
         .build()?;
     Ok(Some(glob.compile_matcher()))
+}
+
+/// If the pattern's leaf pins a fixed file extension, return it (lowercased,
+/// without dot). This holds when the substring after the leaf's last `.` has no
+/// glob metacharacter — e.g. `*.rs`, `*test*.rs`, `Cargo.toml` all pin `rs`/`toml`.
+/// Returns `None` for `*.{a,b}`, `Makefile`, `foo*`, dotfiles, or `**`-leaves.
+fn required_ext(pattern: &str) -> Option<String> {
+    let leaf = pattern.replace('\\', "/");
+    let leaf = leaf.rsplit('/').next().unwrap_or(pattern);
+    if leaf.contains("**") {
+        return None;
+    }
+    let p = leaf.rfind('.')?;
+    if p == 0 || p + 1 >= leaf.len() {
+        return None;
+    }
+    let suffix = &leaf[p + 1..];
+    if suffix.chars().any(is_glob_meta) {
+        return None;
+    }
+    Some(suffix.to_ascii_lowercase())
+}
+
+fn is_glob_meta(c: char) -> bool {
+    matches!(c, '*' | '?' | '[' | ']' | '{' | '}')
 }
 
 /// Build a Gitignore matcher rooted at `root`, merging root/.gitignore if present.

@@ -39,9 +39,23 @@ pub struct Entry {
 pub struct Index {
     pub drive: char,
     pub entries: HashMap<u64, Entry>,
+    /// Inverted index: lowercased extension (without dot) -> FRNs with that
+    /// extension. This is what lets `*.rs` hit only the ~hundreds of matching
+    /// entries instead of scanning all millions.
+    pub by_ext: HashMap<String, Vec<u64>>,
     /// JournalId / NextUsn from QueryUsnJournal, used for incremental reads.
     pub journal_id: u64,
     pub next_usn: i64,
+}
+
+/// Lowercased extension of a filename (without the dot), if it has one.
+/// Dotfiles like `.gitignore` (leading dot, nothing before it) yield `None`.
+pub fn ext_of(name: &str) -> Option<String> {
+    let p = name.rfind('.')?;
+    if p == 0 || p + 1 >= name.len() {
+        return None;
+    }
+    Some(name[p + 1..].to_ascii_lowercase())
 }
 
 /// Raw USN_RECORD_V2 header (FileName follows, located via offset/length).
@@ -188,13 +202,11 @@ fn build_index_inner(handle: HANDLE, drive: char) -> Result<Index> {
         let records = &buffer[8..returned as usize];
         unsafe {
             parse_usn_records(records, |rec, name| {
-                index.entries.insert(
+                index.add_indexed(
                     rec.file_reference_number,
-                    Entry {
-                        parent: rec.parent_file_reference_number,
-                        name: name.to_string(),
-                        is_dir: rec.file_attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
-                    },
+                    rec.parent_file_reference_number,
+                    name.to_string(),
+                    rec.file_attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
                 );
             });
         }
@@ -204,6 +216,24 @@ fn build_index_inner(handle: HANDLE, drive: char) -> Result<Index> {
 }
 
 impl Index {
+    /// Insert an entry and update the extension index.
+    pub fn add_indexed(&mut self, frn: u64, parent: u64, name: String, is_dir: bool) {
+        if let Some(ext) = ext_of(&name) {
+            self.by_ext.entry(ext).or_default().push(frn);
+        }
+        self.entries.insert(frn, Entry { parent, name, is_dir });
+    }
+
+    /// Remove an entry (and its extension-index slot) given its known name.
+    pub fn remove_indexed(&mut self, frn: u64, name: &str) {
+        if let Some(ext) = ext_of(name) {
+            if let Some(v) = self.by_ext.get_mut(&ext) {
+                v.retain(|&x| x != frn);
+            }
+        }
+        self.entries.remove(&frn);
+    }
+
     /// Rebuild the full path of a record, e.g. `C:\Users\foo\bar.txt`.
     /// Guards against cyclic references (corrupt data): walks up at most 256 levels.
     pub fn full_path(&self, frn: u64) -> Option<String> {
@@ -269,34 +299,33 @@ impl Index {
             let next = i64::from_le_bytes(buffer[0..8].try_into().unwrap());
             let records = &buffer[8..returned as usize];
 
-            let mut updates: Vec<(u64, Option<Entry>)> = Vec::new();
+            // (frn, parent, name, is_dir, is_delete). The name is carried for
+            // deletes too, since removing from the extension index needs it.
+            let mut updates: Vec<(u64, u64, String, bool, bool)> = Vec::new();
             unsafe {
                 parse_usn_records(records, |rec, name| {
                     let frn = rec.file_reference_number;
+                    let is_dir = rec.file_attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
                     if rec.reason & USN_REASON_FILE_DELETE != 0 {
-                        updates.push((frn, None));
+                        updates.push((frn, 0, name.to_string(), is_dir, true));
                     } else if rec.reason & (USN_REASON_FILE_CREATE | USN_REASON_RENAME_NEW_NAME) != 0
                     {
                         updates.push((
                             frn,
-                            Some(Entry {
-                                parent: rec.parent_file_reference_number,
-                                name: name.to_string(),
-                                is_dir: rec.file_attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
-                            }),
+                            rec.parent_file_reference_number,
+                            name.to_string(),
+                            is_dir,
+                            false,
                         ));
                     }
                     count += 1;
                 });
             }
-            for (frn, e) in updates {
-                match e {
-                    Some(entry) => {
-                        self.entries.insert(frn, entry);
-                    }
-                    None => {
-                        self.entries.remove(&frn);
-                    }
+            for (frn, parent, name, is_dir, is_delete) in updates {
+                if is_delete {
+                    self.remove_indexed(frn, &name);
+                } else {
+                    self.add_indexed(frn, parent, name, is_dir);
                 }
             }
 
