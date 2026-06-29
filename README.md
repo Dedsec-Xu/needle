@@ -96,6 +96,20 @@ needle query "**/appsettings.json"
 needle index C
 ```
 
+## Benchmark
+
+Run the built-in benchmark (elevated) to time the index build and a set of
+whole-volume queries on your own machine:
+
+```powershell
+./bench.ps1            # benchmark drive C (self-elevates)
+./bench.ps1 D          # benchmark drive D
+```
+
+It prints a ready-to-paste Markdown table: the one-time index-build time plus the
+per-query latency for several whole-volume globs. Queries run against the warm
+in-memory index and stay fresh via the USN Journal.
+
 ## `fast_glob` tool parameters
 
 | param               | default | meaning                                              |

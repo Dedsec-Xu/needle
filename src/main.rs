@@ -52,6 +52,12 @@ enum Cmd {
         #[arg(default_value = "C")]
         drive: char,
     },
+    /// Benchmark: time the index build and sample queries; print a Markdown
+    /// table ready to paste into the README (requires admin).
+    Bench {
+        #[arg(default_value = "C")]
+        drive: char,
+    },
     /// Run the elevated daemon: index + USN refresh + loopback query server.
     Serve {
         #[arg(long, default_value = DEFAULT_ADDR)]
@@ -75,6 +81,7 @@ fn main() -> Result<()> {
             json,
         } => run_query(&pattern, &root, max_results, respect_gitignore, json),
         Cmd::Index { drive } => run_index(drive),
+        Cmd::Bench { drive } => run_bench(drive),
         Cmd::Serve { addr } => run_serve(&addr),
         Cmd::Mcp { addr } => run_mcp(&addr),
     }
@@ -120,6 +127,55 @@ fn run_index(drive: char) -> Result<()> {
         idx.entries.len(),
         drive,
         start.elapsed().as_secs_f64(),
+    );
+    Ok(())
+}
+
+fn run_bench(drive: char) -> Result<()> {
+    let engine = Engine::new();
+
+    // 1) Time the full index build for the drive.
+    let t0 = std::time::Instant::now();
+    engine.warm(drive)?;
+    let build_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let entries = engine.entry_count();
+
+    // 2) Time a set of representative whole-volume queries against the warm index.
+    let samples = [
+        "**/*.rs",
+        "**/Cargo.toml",
+        "**/*.dll",
+        "**/package.json",
+        "**/*.exe",
+    ];
+    let root = format!("{}:\\", drive.to_ascii_uppercase());
+
+    println!("## Benchmark (drive {})\n", drive.to_ascii_uppercase());
+    println!(
+        "Indexed **{}** entries in **{:.0} ms** ({:.2} s).\n",
+        entries,
+        build_ms,
+        build_ms / 1000.0
+    );
+    println!("| query (whole volume) | matches | time |");
+    println!("|----------------------|---------|------|");
+    for pat in samples {
+        let (hits, stats) = engine.query(&Query {
+            root: &root,
+            pattern: pat,
+            max_results: 1_000_000,
+            respect_gitignore: false,
+        })?;
+        println!(
+            "| `{}` | {} | {:.2} ms |",
+            pat,
+            hits.len(),
+            stats.elapsed_ms
+        );
+    }
+    println!(
+        "\n_Index build is a one-time cost; queries run against the warm in-memory \
+         index and are kept fresh via the USN Journal._"
     );
     Ok(())
 }

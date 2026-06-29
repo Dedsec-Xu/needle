@@ -75,8 +75,12 @@ impl Engine {
         total
     }
 
+    /// Build and cache the index for a drive up front (used by `bench`).
+    pub fn warm(&self, drive: char) -> Result<()> {
+        self.ensure_drive(drive)
+    }
+
     /// Number of entries currently indexed across all drives.
-    #[allow(dead_code)]
     pub fn entry_count(&self) -> usize {
         self.indices
             .read()
