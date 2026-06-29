@@ -10,30 +10,21 @@ files — in well under a millisecond, instead of walking the filesystem.
 
 > Filenames and paths only — **not** file contents. Use Grep/ripgrep for content.
 
-## Why needle exists (and how it differs from fff)
+## Why needle exists
 
-Tools like [`fff`](https://github.com/dmtrKovalenko/fff) optimize search **inside
-one project**: directory traversal, fuzzy matching, frecency ranking — tuned for
-a human in an editor who already knows roughly where they are.
+Most file-search tools optimize search **inside one project**: directory
+traversal, fuzzy matching, ranking — tuned for a human in an editor who already
+knows roughly where they are.
 
 An **agent** has a different need: it often has to find things **across the whole
 machine** with no prior knowledge of where they live — a config under
 `C:\Users`, an SDK in `Program Files`, a sibling repo on another drive. Walking
 the tree for that is slow and burns context. `needle` indexes **every NTFS
 volume at once** by reading the MFT, so a whole-disk lookup is as cheap as an
-in-memory hash scan.
+in-memory hash scan — sub-millisecond, even across millions of files.
 
-|                      | fff                          | needle                            |
-|----------------------|------------------------------|-----------------------------------|
-| Scope                | one project / directory      | **whole machine, all NTFS drives**|
-| Backend              | directory traversal (walk)   | **raw MFT + USN Journal**         |
-| Whole-disk lookup    | slow (must walk)             | **<1ms (in-memory)**              |
-| Privileges           | user-space                   | admin (MFT read)                  |
-| Platform             | cross-platform               | **Windows / NTFS only**           |
-| Audience             | human-in-editor              | **autonomous agent**              |
-
-Different jobs. `needle` is the one you want when the agent's search space is
-"the computer," not "the repo."
+needle is the one you want when the agent's search space is "the computer," not
+"the repo."
 
 ## Architecture
 
@@ -163,9 +154,6 @@ needle outpaces not just traversal tools (by ~80–1000x) but also Everything's 
 CLI — both read the MFT, but needle answers from a warm in-process index. Times
 are end-to-end wall-clock (incl. ~5–7 ms process startup); needle's pure in-index
 query is sub-millisecond (see above). Reproduce with `demo/compare.ps1`.
-
-> `fff` is not in this table: it is a library / MCP server, not a CLI, so it
-> cannot be invoked from the shell for a head-to-head.
 
 ## `fast_glob` tool parameters
 
