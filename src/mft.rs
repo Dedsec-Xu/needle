@@ -14,7 +14,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    OPEN_EXISTING,
 };
 use windows::Win32::System::Ioctl::{
     FSCTL_ENUM_USN_DATA, FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_USN_JOURNAL, MFT_ENUM_DATA_V0,
@@ -153,7 +154,10 @@ fn is_ntfs(drive: char) -> bool {
     if ok.is_err() {
         return false;
     }
-    let end = fs_name.iter().position(|&c| c == 0).unwrap_or(fs_name.len());
+    let end = fs_name
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(fs_name.len());
     String::from_utf16_lossy(&fs_name[..end]).eq_ignore_ascii_case("NTFS")
 }
 
