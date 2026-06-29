@@ -13,8 +13,8 @@ use std::mem::size_of;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, HANDLE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows::Win32::System::Ioctl::{
     FSCTL_ENUM_USN_DATA, FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_USN_JOURNAL, MFT_ENUM_DATA_V0,
@@ -101,6 +101,60 @@ fn open_volume(drive: char) -> Result<HANDLE> {
         )
     })?;
     Ok(handle)
+}
+
+/// Enumerate all NTFS volumes on the machine (drive letters), so an empty-root
+/// query can fan out across the whole machine instead of a single drive. Only
+/// fixed/removable drives whose filesystem reports `NTFS` are returned; network,
+/// CD-ROM, and non-NTFS volumes are skipped (the MFT/USN approach can't index
+/// them). Results are sorted for deterministic ordering.
+pub fn ntfs_drives() -> Vec<char> {
+    let mask = unsafe { GetLogicalDrives() };
+    let mut drives = Vec::new();
+    for i in 0..26u32 {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
+        let letter = (b'A' + i as u8) as char;
+        if is_ntfs(letter) {
+            drives.push(letter);
+        }
+    }
+    drives.sort_unstable();
+    drives
+}
+
+/// True if `drive` is a fixed/removable volume formatted NTFS.
+fn is_ntfs(drive: char) -> bool {
+    let root: Vec<u16> = format!("{}:\\", drive)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // Skip network/CD/unknown drive types up front; they're never NTFS-indexable.
+    // GetDriveTypeW returns DRIVE_REMOVABLE (2) or DRIVE_FIXED (3) for the volumes
+    // we can index; everything else (network, CD-ROM, RAM disk, no root) is out.
+    const DRIVE_REMOVABLE: u32 = 2;
+    const DRIVE_FIXED: u32 = 3;
+    let dtype = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
+    if dtype != DRIVE_FIXED && dtype != DRIVE_REMOVABLE {
+        return false;
+    }
+    let mut fs_name = [0u16; 16];
+    let ok = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root.as_ptr()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut fs_name),
+        )
+    };
+    if ok.is_err() {
+        return false;
+    }
+    let end = fs_name.iter().position(|&c| c == 0).unwrap_or(fs_name.len());
+    String::from_utf16_lossy(&fs_name[..end]).eq_ignore_ascii_case("NTFS")
 }
 
 /// Parse a USN record buffer, invoking the callback for each record.
@@ -221,7 +275,14 @@ impl Index {
         if let Some(ext) = ext_of(&name) {
             self.by_ext.entry(ext).or_default().push(frn);
         }
-        self.entries.insert(frn, Entry { parent, name, is_dir });
+        self.entries.insert(
+            frn,
+            Entry {
+                parent,
+                name,
+                is_dir,
+            },
+        );
     }
 
     /// Remove an entry (and its extension-index slot) given its known name.
@@ -256,8 +317,16 @@ impl Index {
         Some(path)
     }
 
-    /// Read the USN Journal for incremental updates; returns the number of records processed.
-    pub fn apply_journal_updates(&mut self, drive: char) -> Result<usize> {
+    /// Read the USN Journal for incremental updates.
+    ///
+    /// The journal can be deleted/recreated (e.g. `fsutil usn deletejournal`, a
+    /// `chkdsk`, or a wrap-around), after which our cached `journal_id` and
+    /// `next_usn` no longer refer to anything real and incremental reads would
+    /// either fail or silently miss changes. We detect that by re-querying the
+    /// journal header first: if the `UsnJournalID` changed, the index is stale
+    /// and the caller must rebuild it from the MFT. Returns `Stale` in that case,
+    /// otherwise `Updated(records_processed)`.
+    pub fn apply_journal_updates(&mut self, drive: char) -> Result<JournalOutcome> {
         let handle = open_volume(drive)?;
         let res = self.apply_journal_inner(handle);
         unsafe {
@@ -266,7 +335,33 @@ impl Index {
         res
     }
 
-    fn apply_journal_inner(&mut self, handle: HANDLE) -> Result<usize> {
+    fn apply_journal_inner(&mut self, handle: HANDLE) -> Result<JournalOutcome> {
+        // Re-query the journal header; a changed/zeroed JournalID means our cached
+        // cursor is invalid and the whole index must be rebuilt from the MFT.
+        let mut jdata = USN_JOURNAL_DATA_V0::default();
+        let mut jret = 0u32;
+        let q = unsafe {
+            DeviceIoControl(
+                handle,
+                FSCTL_QUERY_USN_JOURNAL,
+                None,
+                0,
+                Some(&mut jdata as *mut _ as *mut _),
+                size_of::<USN_JOURNAL_DATA_V0>() as u32,
+                Some(&mut jret),
+                None,
+            )
+        };
+        // Journal gone entirely, or recreated under a new id -> stale.
+        if q.is_err() || jdata.UsnJournalID != self.journal_id {
+            return Ok(JournalOutcome::Stale);
+        }
+        // If our cursor predates the journal's oldest retained record, we've lost
+        // updates (wrap-around / truncation) and must rebuild rather than skip.
+        if self.next_usn < jdata.LowestValidUsn {
+            return Ok(JournalOutcome::Stale);
+        }
+
         let mut read = READ_USN_JOURNAL_DATA_V0 {
             StartUsn: self.next_usn,
             ReasonMask: u32::MAX,
@@ -308,7 +403,8 @@ impl Index {
                     let is_dir = rec.file_attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
                     if rec.reason & USN_REASON_FILE_DELETE != 0 {
                         updates.push((frn, 0, name.to_string(), is_dir, true));
-                    } else if rec.reason & (USN_REASON_FILE_CREATE | USN_REASON_RENAME_NEW_NAME) != 0
+                    } else if rec.reason & (USN_REASON_FILE_CREATE | USN_REASON_RENAME_NEW_NAME)
+                        != 0
                     {
                         updates.push((
                             frn,
@@ -335,6 +431,56 @@ impl Index {
             self.next_usn = next;
             read.StartUsn = next;
         }
-        Ok(count)
+        Ok(JournalOutcome::Updated(count))
+    }
+}
+
+/// Result of an incremental journal refresh.
+pub enum JournalOutcome {
+    /// Journal was valid; `usize` records were processed.
+    Updated(usize),
+    /// Journal id changed or our cursor fell off the retained window — the
+    /// in-memory index is stale and must be rebuilt from the MFT.
+    Stale,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ext_of_basics() {
+        assert_eq!(ext_of("main.rs").as_deref(), Some("rs"));
+        assert_eq!(ext_of("Archive.TAR").as_deref(), Some("tar"));
+        assert_eq!(ext_of("a.b.c").as_deref(), Some("c"));
+        assert_eq!(ext_of("noext"), None);
+        assert_eq!(ext_of(".gitignore"), None); // leading dot only
+        assert_eq!(ext_of("trailingdot."), None);
+    }
+
+    #[test]
+    fn full_path_walks_parents_to_root() {
+        let mut idx = Index {
+            drive: 'C',
+            ..Default::default()
+        };
+        // ROOT <- foo(10) <- bar.txt(11)
+        idx.add_indexed(10, ROOT_FRN, "foo".into(), true);
+        idx.add_indexed(11, 10, "bar.txt".into(), false);
+        assert_eq!(idx.full_path(11).as_deref(), Some("C:\\foo\\bar.txt"));
+        assert_eq!(idx.full_path(10).as_deref(), Some("C:\\foo"));
+    }
+
+    #[test]
+    fn add_and_remove_maintain_ext_index() {
+        let mut idx = Index {
+            drive: 'C',
+            ..Default::default()
+        };
+        idx.add_indexed(10, ROOT_FRN, "lib.rs".into(), false);
+        assert_eq!(idx.by_ext.get("rs").map(|v| v.len()), Some(1));
+        idx.remove_indexed(10, "lib.rs");
+        assert_eq!(idx.by_ext.get("rs").map(|v| v.len()), Some(0));
+        assert!(!idx.entries.contains_key(&10));
     }
 }

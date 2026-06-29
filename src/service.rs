@@ -8,8 +8,8 @@ use std::ffi::OsString;
 use std::sync::mpsc;
 use std::time::Duration;
 use windows_service::service::{
-    ServiceAccess, ServiceErrorControl, ServiceExitCode, ServiceInfo, ServiceControl,
-    ServiceControlAccept, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
+    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
+    ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -85,8 +85,9 @@ pub fn uninstall() -> Result<()> {
 
 /// Entry point used by `needle service run` — hands control to the SCM dispatcher.
 pub fn run_dispatch() -> Result<()> {
-    service_dispatcher::start(SERVICE_NAME, ffi_service_main)
-        .map_err(|e| anyhow!("service dispatcher failed (only the SCM should call `service run`): {e}"))
+    service_dispatcher::start(SERVICE_NAME, ffi_service_main).map_err(|e| {
+        anyhow!("service dispatcher failed (only the SCM should call `service run`): {e}")
+    })
 }
 
 define_windows_service!(ffi_service_main, service_main);

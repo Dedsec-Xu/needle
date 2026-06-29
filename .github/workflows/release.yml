@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build + publish Windows binary
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}"
+          $name = "needle-$ver-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/needle.exe dist/
+          Copy-Item README.md, LICENSE dist/
+          Copy-Item install-service.ps1, uninstall-service.ps1, start-daemon.ps1 dist/
+          $zip = "$name.zip"
+          Compress-Archive -Path dist/* -DestinationPath $zip -Force
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
+          "zip=$zip"        >> $env:GITHUB_OUTPUT
+          "sha256=$hash"    >> $env:GITHUB_OUTPUT
+          Write-Host "Built $zip ($hash)"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.zip }}.sha256
+          generate_release_notes: true
+          body: |
+            SHA256 (`${{ steps.package.outputs.zip }}`): `${{ steps.package.outputs.sha256 }}`

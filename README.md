@@ -1,5 +1,10 @@
 # needle
 
+[![CI](https://github.com/Dedsec-Xu/needle/actions/workflows/ci.yml/badge.svg)](https://github.com/Dedsec-Xu/needle/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Dedsec-Xu/needle?sort=semver)](https://github.com/Dedsec-Xu/needle/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platform: Windows/NTFS](https://img.shields.io/badge/platform-Windows%20%2F%20NTFS-0078D6)
+
 **Find any file on your machine, instantly — a whole-machine file-search MCP for AI agents. Windows / NTFS.**
 
 `needle` reads the NTFS **MFT** (Master File Table) directly and keeps a warm
@@ -47,7 +52,31 @@ Windows service (`install-service.ps1`), the daemon runs as LocalSystem and
 auto-starts at boot, so the privilege boundary is crossed once at install time
 and never again — the agent's non-elevated MCP process just connects to it.
 
-## Build
+## Install
+
+**Prebuilt binary** — grab the latest `needle-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+from [Releases](https://github.com/Dedsec-Xu/needle/releases), unzip, done. Each
+release ships a `.sha256` to verify the download.
+
+**Scoop**
+
+```powershell
+scoop install https://raw.githubusercontent.com/Dedsec-Xu/needle/main/packaging/scoop/needle.json
+```
+
+**Cargo** (builds from source; needs the MSVC toolchain)
+
+```sh
+cargo install --git https://github.com/Dedsec-Xu/needle
+```
+
+After installing, register the daemon as a service once (from an elevated shell):
+
+```powershell
+needle service install
+```
+
+## Build (from source)
 
 ```sh
 cargo build --release
@@ -89,14 +118,26 @@ cargo build --release
    > MCP tool instead of the built-in Glob — it is far faster and sees every
    > drive. Use Grep for file-content search.
 
-## CLI (ad-hoc; must itself be elevated)
+## CLI
+
+Once the service (or daemon) is running, query it with `needle find` — it just
+forwards to the daemon over loopback, so it is **fast and needs no admin**:
 
 ```sh
-# one-shot query (builds the index in-process)
-needle query "**/*.rs" --root "D:\path\to\project" --max-results 50
+# query the running daemon (no admin; the service answers from its warm index)
+needle find "**/*.rs" --root "D:\path\to\project" --max-results 50
 
 # query the whole machine (no root scope)
-needle query "**/appsettings.json"
+needle find "**/appsettings.json"
+```
+
+If the daemon isn't running, `needle query` does a one-shot in-process build
+instead — handy for ad-hoc use, but it **must itself be elevated** and pays the
+full index-build cost each time:
+
+```sh
+# one-shot query (builds the index in-process; requires admin)
+needle query "**/*.rs" --root "D:\path\to\project" --max-results 50
 
 # benchmark a full index build for a drive
 needle index C
@@ -160,7 +201,7 @@ query is sub-millisecond (see above). Reproduce with `demo/compare.ps1`.
 | param               | default | meaning                                              |
 |---------------------|---------|------------------------------------------------------|
 | `pattern`           | —       | glob matched vs the path relative to `root`          |
-| `root`              | `""`    | scope to this directory; empty = **whole volume**    |
+| `root`              | `""`    | scope to this directory; empty = **whole machine** (all NTFS volumes) |
 | `max_results`       | `200`   | cap on returned paths                                |
 | `respect_gitignore` | `true`  | apply `root/.gitignore`, always skip `.git`          |
 

@@ -3,12 +3,11 @@
 //! the machine instantly instead of walking the filesystem.
 //!
 //! Because reading the MFT requires admin but Claude Code launches MCP servers
-//! non-elevated, the tool splits into two roles:
-//!   * `serve` — elevated daemon: holds the index, applies USN updates, answers
-//!     queries over loopback TCP.
-//!   * `mcp`   — non-elevated frontend launched by Claude Code: forwards the
-//!     `fast_glob` tool to the daemon.
-//! `query` runs a one-shot in-process search (must itself be elevated).
+//! non-elevated, the tool splits into two roles: `serve` (the elevated daemon
+//! that holds the index, applies USN updates, and answers queries over loopback
+//! TCP) and `mcp` (the non-elevated frontend launched by Claude Code that
+//! forwards the `fast_glob` tool to the daemon). `query` runs a one-shot
+//! in-process search (must itself be elevated).
 
 mod engine;
 mod ipc;
@@ -27,7 +26,10 @@ use std::thread;
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "needle", about = "Whole-machine sub-millisecond file search for AI agents (NTFS MFT + USN)")]
+#[command(
+    name = "needle",
+    about = "Whole-machine sub-millisecond file search for AI agents (NTFS MFT + USN)"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -279,8 +281,7 @@ fn run_serve(addr: &str) -> Result<()> {
         });
     }
 
-    let listener = TcpListener::bind(addr)
-        .map_err(|e| anyhow!("failed to bind {addr}: {e}"))?;
+    let listener = TcpListener::bind(addr).map_err(|e| anyhow!("failed to bind {addr}: {e}"))?;
     eprintln!("[needled] listening on {addr}");
 
     for stream in listener.incoming() {
@@ -360,8 +361,9 @@ fn err_response(msg: &str) -> WireResponse {
 
 /// Send one query to the daemon and read its response.
 fn daemon_query(addr: &str, q: &WireQuery) -> Result<WireResponse> {
-    let stream = TcpStream::connect(addr)
-        .map_err(|e| anyhow!("cannot reach daemon at {addr}: {e}. Start it with: needle serve (as admin)"))?;
+    let stream = TcpStream::connect(addr).map_err(|e| {
+        anyhow!("cannot reach daemon at {addr}: {e}. Start it with: needle serve (as admin)")
+    })?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     let mut writer = stream.try_clone()?;
     writeln!(writer, "{}", serde_json::to_string(q)?)?;
@@ -416,7 +418,11 @@ fn run_mcp(addr: &str) -> Result<()> {
             "tools/call" => Some(handle_tool_call(id, &req, addr)),
             "ping" => Some(reply(id, json!({}))),
             _ if id.is_none() => None,
-            _ => Some(error_reply(id, -32601, &format!("method not found: {method}"))),
+            _ => Some(error_reply(
+                id,
+                -32601,
+                &format!("method not found: {method}"),
+            )),
         };
 
         if let Some(resp) = response {
@@ -527,7 +533,10 @@ fn handle_tool_call(id: Option<Value>, req: &Value, addr: &str) -> Value {
                 }),
             )
         }
-        Ok(resp) => tool_error(id, &resp.error.unwrap_or_else(|| "unknown daemon error".into())),
+        Ok(resp) => tool_error(
+            id,
+            &resp.error.unwrap_or_else(|| "unknown daemon error".into()),
+        ),
         Err(e) => tool_error(id, &e.to_string()),
     }
 }
