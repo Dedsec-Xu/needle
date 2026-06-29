@@ -110,6 +110,26 @@ It prints a ready-to-paste Markdown table: the one-time index-build time plus th
 per-query latency for several whole-volume globs. Queries run against the warm
 in-memory index and stay fresh via the USN Journal.
 
+### Measured results
+
+On a drive with **2,265,224 indexed entries** (full index built once in ~4.3 s):
+
+| query (whole volume) | matches | time      |
+|----------------------|---------|-----------|
+| `**/*.rs`            | 601     | **0.85 ms** |
+| `**/Cargo.toml`      | 25      | **0.20 ms** |
+| `**/*.exe`           | 928     | **0.89 ms** |
+| `**/*.dll`           | 13,932  | 12.8 ms   |
+| `**/package.json`    | 10,104  | 26.6 ms   |
+
+Extension-pinned globs hit the inverted index and are answered in well under a
+millisecond. Latency for the last two scales only because the benchmark returns
+*every* match (`max_results = 1,000,000`); the `fast_glob` MCP tool defaults to
+`max_results = 200`, so even very broad globs return sub-millisecond in practice.
+
+For comparison, before the inverted index every query was a full ~2.3M-entry scan
+at ~360 ms — the extension index is a ~400x speedup on the common cases.
+
 ## `fast_glob` tool parameters
 
 | param               | default | meaning                                              |
@@ -127,9 +147,11 @@ so `**/*.swift`, `src/**/*.rs`, and `**/Cargo.toml` all behave as expected.
 - **Windows + NTFS only.** The MFT/USN approach has no equivalent on
   ext4/APFS/etc.; non-NTFS volumes are skipped.
 - The daemon requires administrator privileges.
-- The current matcher scans all indexed entries per query and reconstructs each
-  path on demand. Fast enough for interactive agent use, but a leaf-name prefix
-  index would further speed up very hot query loops.
+- Extension-pinned globs use the inverted index; patterns without a fixed
+  extension (e.g. `Makefile`, `foo*`, `**/x/**`) fall back to a full scan with a
+  cheap basename pre-filter. Parallelizing that fallback (rayon) is a future win.
+- Query latency scales with the number of returned matches (each match
+  reconstructs its full path), so keep `max_results` modest for broad globs.
 
 ## License
 
