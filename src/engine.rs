@@ -299,9 +299,11 @@ fn sort_hits(hits: &mut [Hit], key: SortKey, order: Order) {
                 .to_ascii_lowercase()
                 .cmp(&basename(&b.path).to_ascii_lowercase())
         }),
-        SortKey::Mtime => {
-            hits.sort_by(|a, b| a.mtime.unwrap_or(i64::MIN).cmp(&b.mtime.unwrap_or(i64::MIN)))
-        }
+        SortKey::Mtime => hits.sort_by(|a, b| {
+            a.mtime
+                .unwrap_or(i64::MIN)
+                .cmp(&b.mtime.unwrap_or(i64::MIN))
+        }),
         SortKey::Size => hits.sort_by(|a, b| a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0))),
         SortKey::None => {}
     }
@@ -553,9 +555,58 @@ mod tests {
 
     #[test]
     fn leaf_matcher_filters_basename() {
-        let m = leaf_matcher("**/*.rs").unwrap().unwrap();
+        let m = leaf_matcher("**/*.rs", false).unwrap().unwrap();
         assert!(m.is_match("main.rs"));
         assert!(!m.is_match("main.toml"));
-        assert!(leaf_matcher("**/x/**").unwrap().is_none());
+        assert!(leaf_matcher("**/x/**", false).unwrap().is_none());
+    }
+
+    #[test]
+    fn case_sensitive_matcher() {
+        assert!(build_matcher("**/*.RS", false)
+            .unwrap()
+            .is_match("a/main.rs"));
+        assert!(!build_matcher("**/*.RS", true)
+            .unwrap()
+            .is_match("a/main.rs"));
+    }
+
+    #[test]
+    fn parsers_default_safely() {
+        assert!(matches!(Kind::parse("dir"), Kind::Dir));
+        assert!(matches!(Kind::parse("xyz"), Kind::Any));
+        assert!(matches!(SortKey::parse("size"), SortKey::Size));
+        assert!(matches!(SortKey::parse(""), SortKey::None));
+        assert!(matches!(Order::parse("desc"), Order::Desc));
+        assert!(matches!(Order::parse("whatever"), Order::Asc));
+    }
+
+    #[test]
+    fn sort_hits_orders_by_size_desc() {
+        let mut hits = vec![
+            Hit {
+                path: "a".into(),
+                is_dir: false,
+                size: Some(10),
+                mtime: None,
+            },
+            Hit {
+                path: "b".into(),
+                is_dir: false,
+                size: Some(99),
+                mtime: None,
+            },
+            Hit {
+                path: "c".into(),
+                is_dir: false,
+                size: Some(50),
+                mtime: None,
+            },
+        ];
+        sort_hits(&mut hits, SortKey::Size, Order::Desc);
+        assert_eq!(
+            hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            ["b", "c", "a"]
+        );
     }
 }
