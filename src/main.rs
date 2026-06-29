@@ -28,6 +28,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(
     name = "needle",
+    version,
     about = "Whole-machine sub-millisecond file search for AI agents (NTFS MFT + USN)"
 )]
 struct Cli {
