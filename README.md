@@ -51,7 +51,10 @@ needle mcp     (non-elevated, launched by the agent / MCP client)
 ```
 
 The daemon exists purely to cross the privilege boundary — it is the only part
-that needs admin. The MCP frontend is a thin, stateless forwarder.
+that needs admin. The MCP frontend is a thin, stateless forwarder. Installed as a
+Windows service (`install-service.ps1`), the daemon runs as LocalSystem and
+auto-starts at boot, so the privilege boundary is crossed once at install time
+and never again — the agent's non-elevated MCP process just connects to it.
 
 ## Build
 
@@ -61,13 +64,25 @@ cargo build --release
 
 ## Run
 
-1. **Start the daemon (admin, leave it running):**
+1. **Install the daemon as a service (once).** It then runs as LocalSystem and
+   auto-starts at every boot — no manual launch, no UAC prompt afterwards:
+
+   ```powershell
+   ./install-service.ps1       # self-elevates via UAC, registers + starts 'needled'
+   ```
+
+   Remove it later with `./uninstall-service.ps1`.
+
+   <details><summary>Prefer not to install a service?</summary>
+
+   Run the daemon manually instead (must stay open, re-run after each reboot):
 
    ```powershell
    ./start-daemon.ps1          # self-elevates via UAC
    # or, in an already-elevated shell:
    ./target/release/needle.exe serve
    ```
+   </details>
 
 2. **Register the MCP server.** A project-scoped `.mcp.json` is included; or add
    it globally to Claude Code:

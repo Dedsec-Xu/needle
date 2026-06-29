@@ -13,6 +13,7 @@
 mod engine;
 mod ipc;
 mod mft;
+mod service;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -81,6 +82,21 @@ enum Cmd {
         #[arg(long, default_value = DEFAULT_ADDR)]
         addr: String,
     },
+    /// Manage the Windows service (install once; auto-starts as LocalSystem).
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Register and start the service (run elevated).
+    Install,
+    /// Stop and remove the service (run elevated).
+    Uninstall,
+    /// Internal: entry point invoked by the Service Control Manager.
+    Run,
 }
 
 fn main() -> Result<()> {
@@ -104,6 +120,22 @@ fn main() -> Result<()> {
         Cmd::Bench { drive } => run_bench(drive),
         Cmd::Serve { addr } => run_serve(&addr),
         Cmd::Mcp { addr } => run_mcp(&addr),
+        Cmd::Service { action } => match action {
+            ServiceAction::Install => {
+                service::install()?;
+                eprintln!(
+                    "[needle] service '{}' installed and started (LocalSystem, auto-start).",
+                    service::SERVICE_NAME
+                );
+                Ok(())
+            }
+            ServiceAction::Uninstall => {
+                service::uninstall()?;
+                eprintln!("[needle] service '{}' removed.", service::SERVICE_NAME);
+                Ok(())
+            }
+            ServiceAction::Run => service::run_dispatch(),
+        },
     }
 }
 

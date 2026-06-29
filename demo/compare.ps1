@@ -22,8 +22,7 @@ param(
     [string]$Ext    = "rs",
     [string]$Drive  = "D",
     [int]$Max       = 1000000,
-    [string]$Addr   = "127.0.0.1:48923",
-    [string]$EsPath = "$env:USERPROFILE\Downloads\ES-1.1.0.30.x64\es.exe"
+    [string]$Addr   = "127.0.0.1:48923"
 )
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -40,8 +39,8 @@ if ((Test-Path $wingetLinks) -and ($env:PATH -notlike "*$wingetLinks*")) {
 function Write-Head($t) { Write-Host "`n$t" -ForegroundColor Cyan }
 function Have($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
-# es.exe (Everything CLI): use -EsPath if it exists, else fall back to PATH.
-$es = if (Test-Path $EsPath) { $EsPath } elseif (Have es) { "es" } else { $null }
+# es.exe (Everything CLI): expected on PATH (e.g. via winget or manual install).
+$es = if (Have es) { "es" } else { $null }
 
 if (-not (Test-Path $needle)) { Write-Error "needle.exe not found. Run: cargo build --release"; exit 1 }
 
