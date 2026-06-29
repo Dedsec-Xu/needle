@@ -98,7 +98,8 @@ release ships a `.sha256` to verify the download.
 **Scoop**
 
 ```powershell
-scoop install https://raw.githubusercontent.com/Dedsec-Xu/needle/main/packaging/scoop/needle.json
+scoop bucket add dedsec https://github.com/Dedsec-Xu/scoop-bucket
+scoop install needle
 ```
 
 **Cargo** (builds from source; needs the MSVC toolchain)
