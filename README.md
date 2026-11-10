@@ -249,6 +249,24 @@ needle find "**/*.log" --root "D:\proj" --sort size --order desc
 
 # case-sensitive match
 needle find "**/README.md" --case-sensitive
+
+# exact number of matches, no paths
+needle find "**/*.exe" --count
+
+# write every match to a file (one path per line)
+needle find "**/*.exe" --max-results 1000000 --export-txt exes.txt
+```
+
+`needle es` accepts the common `es.exe` (Everything CLI) options, so existing
+habits and scripts carry over: `-n`, `-path`, `/ad`, `/a-d`, `-i`/`-case`,
+`-sort name|size|date-modified[-ascending|-descending]`, `-get-result-count`
+and `-export-txt`. It takes one search term (a plain word is a substring match,
+`*`/`?` match the whole name) and rejects other options and Everything search
+syntax (`ext:`, `|`, `!`, …) instead of ignoring them:
+
+```sh
+needle es -get-result-count *.exe
+needle es -path "D:\proj" -sort size-descending -n 10 *.log
 ```
 
 Flags (`--kind`, `--case-sensitive`, `--sort`, `--order`) work on both
@@ -341,7 +359,9 @@ Reproduce with `demo/compare.ps1`.
 |---------------------|----------|------------------------------------------------------|
 | `pattern`           | —        | glob matched vs the path relative to `root`          |
 | `root`              | `""`     | scope to this directory; empty = **whole machine** (all NTFS volumes) |
-| `max_results`       | `200`    | cap on returned paths                                |
+| `max_results`       | `200`    | paths returned inline (max 1000)                     |
+| `count_only`        | `false`  | return only the exact match count                    |
+| `spill`             | `"auto"` | `auto`: save the full list to a file when results exceed `max_results`; `never` |
 | `respect_gitignore` | `true`   | apply `root/.gitignore`, always skip `.git`          |
 | `kind`              | `"any"`  | `file`, `dir`, or `any`                              |
 | `case_sensitive`    | `false`  | case-sensitive pattern matching                      |
@@ -351,6 +371,16 @@ Reproduce with `demo/compare.ps1`.
 Patterns are matched against forward-slash-normalized paths (case-insensitive
 unless `case_sensitive`), so `**/*.swift`, `src/**/*.rs`, and `**/Cargo.toml` all
 behave as expected.
+
+### Large result sets
+
+The agent's context only ever gets `max_results` paths. When more match, Needle
+counts every match and saves the complete list (up to 1,000,000 paths, one per
+line, unsorted) under `%LOCALAPPDATA%\needle\results\`, returning
+`"200 of 312845 match(es) shown"` plus the file path for the agent to query with
+`rg` / `Select-String`. The file is written by the non-elevated MCP process, and
+files older than 24 hours are removed on the next save. Use `count_only` when
+only the number matters. Counting needs a daemon from 0.2.0 or later.
 
 ### Sorting (recent / largest)
 

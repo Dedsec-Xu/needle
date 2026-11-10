@@ -9,7 +9,7 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:48923";
 
 /// A query sent from the MCP frontend to the daemon. Newer optional fields use
 /// serde defaults so older clients/servers stay compatible.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct WireQuery {
     pub root: String,
     pub pattern: String,
@@ -27,6 +27,9 @@ pub struct WireQuery {
     /// "asc" | "desc".
     #[serde(default = "default_order")]
     pub order: String,
+    /// Scan past `max_results` and report the exact match count in `total`.
+    #[serde(default)]
+    pub count_all: bool,
 }
 
 fn default_kind() -> String {
@@ -67,4 +70,7 @@ pub struct WireResponse {
     /// lazy-stat cap), so top-k may be approximate.
     #[serde(default)]
     pub sort_approximate: bool,
+    /// Exact match count; present only when the query set `count_all`.
+    #[serde(default)]
+    pub total: Option<usize>,
 }

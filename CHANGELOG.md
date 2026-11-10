@@ -3,6 +3,23 @@
 All notable changes to needle are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions follow SemVer.
 
+## [0.2.0]
+
+### Added
+- `fast_glob` `count_only`: exact match count without listing paths.
+- `fast_glob` `spill` (default `auto`): when results exceed `max_results`, the
+  full list (up to 1,000,000 paths) is saved to
+  `%LOCALAPPDATA%\needle\results\` and its path and exact total are returned.
+- `needle find --count` and `--export-txt <file>`.
+- `needle es`: the common `es.exe` options (`-n`, `-path`, `/ad`, `/a-d`, `-i`,
+  `-sort`, `-get-result-count`, `-export-txt`); unsupported options are errors.
+- IPC: optional `count_all` request field and `total` response field (older
+  clients and daemons stay compatible; counting needs a 0.2.0 daemon).
+
+### Changed
+- `fast_glob` `max_results` is capped at 1000 inline paths.
+- `truncated` is now set only when a match beyond the cap actually exists.
+
 ## [0.1.3]
 
 ### Added

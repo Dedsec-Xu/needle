@@ -104,6 +104,9 @@ pub struct Query<'a> {
     pub case_sensitive: bool,
     pub sort: SortKey,
     pub order: Order,
+    /// Keep scanning past `max_results` to report the exact match count in
+    /// `QueryStats::total` (costs a full scan of the candidate set).
+    pub count_all: bool,
 }
 
 /// Holds one cached index per drive letter. Each index is an `Arc<RwLock<_>>` so
@@ -222,17 +225,17 @@ impl Engine {
         let mut hits = Vec::new();
         let mut scanned = 0usize;
         let mut cap_hit = false;
+        let mut total = 0usize;
 
         let map = self.indices.read().unwrap();
         for &drive in &drives {
-            if hits.len() >= collect_cap {
-                cap_hit = true;
+            if cap_hit && !q.count_all {
                 break;
             }
             let Some(idx) = map.get(&drive) else { continue };
             let idx = idx.read().unwrap();
             let remaining = collect_cap - hits.len();
-            let (s, t) = scan_index(
+            let (s, t, m) = scan_index(
                 &idx,
                 &root_norm,
                 &matcher,
@@ -241,10 +244,12 @@ impl Engine {
                 &required_ext,
                 q.kind,
                 remaining,
+                q.count_all,
                 &mut hits,
             );
             scanned += s;
             cap_hit |= t;
+            total += m;
         }
         drop(map);
 
@@ -273,6 +278,9 @@ impl Engine {
                 truncated = true;
             }
         }
+        if q.count_all {
+            truncated = total > hits.len();
+        }
 
         let drive = drives
             .iter()
@@ -285,6 +293,7 @@ impl Engine {
             returned: hits.len(),
             truncated,
             sort_approximate,
+            total: q.count_all.then_some(total),
             elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
         };
         Ok((hits, stats))
@@ -314,8 +323,9 @@ fn basename(path: &str) -> &str {
 }
 
 /// Scan a single drive's index, appending up to `remaining` hits. Returns
-/// `(entries_scanned, truncated)` where `truncated` means the `remaining` cap
-/// was reached before the scan finished.
+/// `(entries_scanned, truncated, matched)` where `truncated` means at least one
+/// match beyond the `remaining` cap was seen. With `count_all` the scan runs to
+/// the end so `matched` is exact; otherwise it stops at the first overflow.
 #[allow(clippy::too_many_arguments)]
 fn scan_index(
     idx: &Index,
@@ -326,9 +336,12 @@ fn scan_index(
     required_ext: &Option<String>,
     kind: Kind,
     remaining: usize,
+    count_all: bool,
     hits: &mut Vec<Hit>,
-) -> (usize, bool) {
+) -> (usize, bool, usize) {
     let mut scanned = 0usize;
+    let mut matched = 0usize;
+    let mut truncated = false;
     let start_len = hits.len();
     let limit = start_len + remaining;
 
@@ -384,9 +397,14 @@ fn scan_index(
                     scanned += 1;
                     if let Some(entry) = idx.entries.get(&frn) {
                         if let Some(hit) = try_one(frn, entry) {
-                            hits.push(hit);
-                            if hits.len() >= limit {
-                                return (scanned, true);
+                            matched += 1;
+                            if hits.len() < limit {
+                                hits.push(hit);
+                            } else {
+                                truncated = true;
+                                if !count_all {
+                                    return (scanned, true, matched);
+                                }
                             }
                         }
                     }
@@ -404,15 +422,20 @@ fn scan_index(
                     }
                 }
                 if let Some(hit) = try_one(frn, entry) {
-                    hits.push(hit);
-                    if hits.len() >= limit {
-                        return (scanned, true);
+                    matched += 1;
+                    if hits.len() < limit {
+                        hits.push(hit);
+                    } else {
+                        truncated = true;
+                        if !count_all {
+                            return (scanned, true, matched);
+                        }
                     }
                 }
             }
         }
     }
-    (scanned, false)
+    (scanned, truncated, matched)
 }
 
 /// Telemetry returned alongside results.
@@ -425,6 +448,8 @@ pub struct QueryStats {
     pub truncated: bool,
     /// True when a metadata sort hit the lazy-stat cap, so top-k is approximate.
     pub sort_approximate: bool,
+    /// Exact match count, present only when `count_all` was requested.
+    pub total: Option<usize>,
     pub elapsed_ms: f64,
 }
 
@@ -515,6 +540,41 @@ fn build_gitignore(root: &str) -> Option<Gitignore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scan(idx: &Index, pattern: &str, remaining: usize, count_all: bool) -> (usize, bool, usize) {
+        let mut hits = Vec::new();
+        let (_, truncated, matched) = scan_index(
+            idx,
+            "",
+            &build_matcher(pattern, false).unwrap(),
+            &leaf_matcher(pattern, false).unwrap(),
+            &None,
+            &required_ext(pattern),
+            Kind::Any,
+            remaining,
+            count_all,
+            &mut hits,
+        );
+        (hits.len(), truncated, matched)
+    }
+
+    #[test]
+    fn count_all_counts_past_the_cap() {
+        let mut idx = Index {
+            drive: 'C',
+            ..Default::default()
+        };
+        for frn in 10..15 {
+            idx.add_indexed(frn, crate::mft::ROOT_FRN, format!("f{frn}.txt"), false);
+        }
+        // Bucketed (fixed extension) and full-scan paths both count exactly.
+        for pattern in ["**/*.txt", "**/f*"] {
+            assert_eq!(scan(&idx, pattern, 2, true), (2, true, 5));
+            assert_eq!(scan(&idx, pattern, 0, true), (0, true, 5));
+            assert_eq!(scan(&idx, pattern, 5, false), (5, false, 5));
+            assert!(scan(&idx, pattern, 2, false).1);
+        }
+    }
 
     #[test]
     fn required_ext_pins_extension() {
