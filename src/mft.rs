@@ -27,7 +27,7 @@ use windows::Win32::System::Ioctl::{
 use windows::Win32::System::IO::DeviceIoControl;
 
 /// Fixed FRN of the NTFS root directory.
-const ROOT_FRN: u64 = 0x0005_0000_0000_0005;
+pub(crate) const ROOT_FRN: u64 = 0x0005_0000_0000_0005;
 
 /// One filesystem record (filename metadata only, no content).
 #[derive(Clone, Debug)]
